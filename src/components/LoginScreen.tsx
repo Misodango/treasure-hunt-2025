@@ -1,39 +1,23 @@
 import { useState } from 'react'
-import type { FormEvent } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import LoadingSpinner from './LoadingSpinner'
 
 const LoginScreen = () => {
-  const { user, role, loading, sendLoginLink, completeEmailLinkSignin } = useAuth()
-  const [email, setEmail] = useState('')
+  const { user, role, loading, signInWithGoogle } = useAuth()
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
 
-  const handleSendLink = async (evt: FormEvent<HTMLFormElement>) => {
-    evt.preventDefault()
+  const handleGoogleSignin = async () => {
     setPending(true)
     setError(null)
+    setStatus(null)
     try {
-      await sendLoginLink(email)
-      setStatus('ログインリンクを送信しました。メールを確認してください。')
+      const credential = await signInWithGoogle()
+      setStatus(`ログインしました: ${credential.user.email ?? ''}`)
     } catch (err) {
       console.error(err)
-      setError('リンク送信に失敗しました。メールアドレスを確認して再試行してください。')
-    } finally {
-      setPending(false)
-    }
-  }
-
-  const handleCompleteSignin = async () => {
-    setPending(true)
-    setError(null)
-    try {
-      await completeEmailLinkSignin(email)
-      setStatus('ログインが完了しました。')
-    } catch (err) {
-      console.error(err)
-      setError('ログインに失敗しました。メールアドレスを入力して、再度リンクを開いてください。')
+      setError('Googleログインに失敗しました。アカウント権限を確認してください。')
     } finally {
       setPending(false)
     }
@@ -43,29 +27,9 @@ const LoginScreen = () => {
     <section className="card">
       <h2>ログイン</h2>
       <p className="description">
-        登録済みリーダーのメールアドレス宛にログインリンクを送信します。
-        メール内のボタンをタップするとこの画面に戻り、ログインが完了します。
+        Googleアカウントでログインします。寮イベント用に許可されたアカウントのみアクセスできます。
       </p>
-      <form onSubmit={handleSendLink} className="form-vertical">
-        <label className="form-field">
-          <span>メールアドレス</span>
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            required
-            placeholder="leader@example.com"
-            disabled={pending}
-          />
-        </label>
-        <button type="submit" disabled={pending}>
-          リンクを送信
-        </button>
-      </form>
-      <button type="button" className="secondary" onClick={handleCompleteSignin} disabled={pending}>
-        すでにメールを開いている場合はここをタップ
-      </button>
-      {pending ? <LoadingSpinner label="処理中..." /> : null}
+      {pending ? <LoadingSpinner label="Googleに接続しています..." /> : null}
       {status ? <p className="status success">{status}</p> : null}
       {error ? <p className="status error">{error}</p> : null}
       {loading ? (
@@ -74,7 +38,11 @@ const LoginScreen = () => {
         <p className="status info">
           ログイン中: <strong>{user.email}</strong> / ロール: {role ?? '未付与'}
         </p>
-      ) : null}
+      ) : 
+        <button type="button" onClick={handleGoogleSignin} disabled={pending}>
+          Googleでログイン
+        </button>
+      }
     </section>
   )
 }
