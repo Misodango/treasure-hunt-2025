@@ -52,8 +52,8 @@ const MainApp = () => {
     <div className="app-layout">
       <header className="app-header">
         <div>
-          <h1>宝探しイベント 管理&参加アプリ</h1>
-          <p>リアルタイムなスコア反映と凍結機能付きの運営ダッシュボード</p>
+          <h1>明和寮 宝探しイベント</h1>
+          <p>ダッシュボード</p>
         </div>
         <div className="header-meta">
           {user ? (
@@ -81,7 +81,7 @@ const MainApp = () => {
         {renderDashboard()}
       </main>
       <footer className="app-footer">
-        <small>© {new Date().getFullYear()} Dormitory Treasure Hunt Committee</small>
+        <small>© {new Date().getFullYear()} 明和寮 イベント委員</small>
       </footer>
     </div>
   )

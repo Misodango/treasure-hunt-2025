@@ -1,10 +1,8 @@
 import {
+  GoogleAuthProvider,
   onAuthStateChanged,
-  sendSignInLinkToEmail,
-  isSignInWithEmailLink,
-  signInWithEmailLink,
+  signInWithPopup,
   signOut,
-  type ActionCodeSettings,
   type User,
   type UserCredential
 } from 'firebase/auth'
@@ -17,19 +15,11 @@ type AuthContextValue = {
   user: User | null
   role: AuthRole
   loading: boolean
-  sendLoginLink: (email: string) => Promise<void>
-  completeEmailLinkSignin: (email?: string) => Promise<UserCredential | null>
+  signInWithGoogle: () => Promise<UserCredential>
   signOut: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
-
-const pendingEmailStorageKey = 'treasure-hunt-pending-email'
-
-const actionCodeSettings: ActionCodeSettings = {
-  url: import.meta.env.VITE_EMAIL_LINK_REDIRECT_URL ?? window.location.href,
-  handleCodeInApp: true
-}
 
 const fetchRole = async (user: User | null): Promise<AuthRole> => {
   if (!user) return null
@@ -61,30 +51,14 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return () => unsubscribe()
   }, [])
 
-  const sendLoginLink = useCallback(async (email: string) => {
-    await sendSignInLinkToEmail(auth, email, actionCodeSettings)
-    window.localStorage.setItem(pendingEmailStorageKey, email)
+  const signInWithGoogle = useCallback(async () => {
+    const provider = new GoogleAuthProvider()
+    const hdDomain = import.meta.env.VITE_GOOGLE_HD_DOMAIN as string | undefined
+    if (hdDomain) {
+      provider.setCustomParameters({ hd: hdDomain })
+    }
+    return signInWithPopup(auth, provider)
   }, [])
-
-  const completeEmailLinkSignin = useCallback(
-    async (email?: string) => {
-      if (!isSignInWithEmailLink(auth, window.location.href)) return null
-
-      let finalEmail = email
-      if (!finalEmail) {
-        finalEmail = window.localStorage.getItem(pendingEmailStorageKey) ?? undefined
-      }
-
-      if (!finalEmail) {
-        throw new Error('メールアドレスが見つかりません。入力して再度お試しください。')
-      }
-
-      const credential = await signInWithEmailLink(auth, finalEmail, window.location.href)
-      window.localStorage.removeItem(pendingEmailStorageKey)
-      return credential
-    },
-    []
-  )
 
   const signOutUser = useCallback(async () => {
     await signOut(auth)
@@ -95,11 +69,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       user,
       role,
       loading,
-      sendLoginLink,
-      completeEmailLinkSignin,
+      signInWithGoogle,
       signOut: signOutUser
     }),
-    [user, role, loading, sendLoginLink, completeEmailLinkSignin, signOutUser]
+    [user, role, loading, signInWithGoogle, signOutUser]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
