@@ -1,0 +1,26 @@
+.spinner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #1f2933;
+}
+
+.spinner__circle {
+  width: 1.5rem;
+  height: 1.5rem;
+  border: 3px solid rgba(59, 130, 246, 0.2);
+  border-top-color: rgba(59, 130, 246, 1);
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+}
+
+.spinner__label {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
