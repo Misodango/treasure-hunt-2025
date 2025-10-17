@@ -1,31 +1,56 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useZxing } from 'react-zxing'
 import { storeScannedToken } from '../lib/qr'
 
-type BarcodeDetectorResult = { rawValue: string }
-type BarcodeDetectorOptions = { formats?: string[] }
-
-interface BarcodeDetector {
-  detect: (source: CanvasImageSource) => Promise<BarcodeDetectorResult[]>
-}
-
-declare global {
-  interface Window {
-    BarcodeDetector?: new (options?: BarcodeDetectorOptions) => BarcodeDetector
-  }
-}
+const INITIAL_STATUS = 'カメラを開始するには下のボタンを押してください。'
 
 const formatTokenPreview = (token: string) => {
   if (token.length <= 32) return token
   return `${token.slice(0, 24)}…${token.slice(-8)}`
 }
 
+const isIgnorableZXingError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false
+  const name = (error as { name?: unknown }).name
+  return typeof name === 'string' && name.startsWith('NotFoundException')
+}
+
+const resolveScannerErrorMessage = (error: unknown): string => {
+  if (error instanceof DOMException) {
+    switch (error.name) {
+      case 'NotAllowedError':
+        return 'ブラウザでカメラ利用が許可されませんでした。権限を確認して再度お試しください。'
+      case 'NotFoundError':
+        return '利用可能なカメラが見つかりませんでした。別のデバイスでお試しください。'
+      case 'TrackStartError':
+      case 'NotReadableError':
+        return 'カメラを起動できませんでした。別のアプリで利用されていないか確認してください。'
+      case 'OverconstrainedError':
+      case 'ConstraintNotSatisfiedError':
+        return 'カメラ設定の初期化に失敗しました。別のカメラでお試しください。'
+      default:
+        return (
+          error.message ||
+          'カメラの初期化に失敗しました。ブラウザの権限設定を確認してください。'
+        )
+    }
+  }
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return 'カメラの初期化に失敗しました。ブラウザの権限設定を確認してください。'
+}
+
 const QrScannerPage = () => {
-  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const mountedRef = useRef(true)
+  const lastTokenRef = useRef<string | null>(null)
+
+  const [status, setStatus] = useState(INITIAL_STATUS)
   const [error, setError] = useState<string | null>(null)
-  const [status, setStatus] = useState('カメラを初期化しています…')
   const [scannedToken, setScannedToken] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const lastTokenRef = useRef<string | null>(null)
+  const [isRunning, setIsRunning] = useState(false)
+  const [shouldScan, setShouldScan] = useState(false)
 
   const supportsCamera = useMemo(
     () =>
@@ -34,123 +59,131 @@ const QrScannerPage = () => {
     []
   )
 
-  const supportsBarcodeDetector = useMemo(
-    () => typeof window !== 'undefined' && typeof window.BarcodeDetector === 'function',
+  const stopAll = useCallback(() => {
+    if (!mountedRef.current) return
+    setStatus(INITIAL_STATUS)
+    setIsRunning(false)
+    setShouldScan(false)
+  }, [])
+
+  const handleDetectedToken = useCallback(
+    async (rawValue: string) => {
+      if (!rawValue || rawValue === lastTokenRef.current || !mountedRef.current) return
+      lastTokenRef.current = rawValue
+      setScannedToken(rawValue)
+      storeScannedToken(rawValue)
+      setStatus('QRコードを検出しました。')
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(rawValue)
+          if (mountedRef.current) {
+            setCopied(true)
+          }
+        } catch {
+          if (mountedRef.current) {
+            setCopied(false)
+          }
+        }
+      } else if (mountedRef.current) {
+        setCopied(false)
+      }
+    },
     []
   )
 
-  useEffect(() => {
+  const restartScanner = useCallback(() => {
+    setShouldScan(false)
+    window.setTimeout(() => {
+      if (mountedRef.current) {
+        setShouldScan(true)
+      }
+    }, 0)
+  }, [])
+
+  const startScanner = useCallback(() => {
     if (!supportsCamera) {
       setStatus('')
       setError('お使いのブラウザでカメラが利用できません。通常のQRリーダーで読み取り、トークンを手入力してください。')
       return
     }
 
-    let isMounted = true
-    let stream: MediaStream | null = null
-    let rafId = 0
-    const canvas = document.createElement('canvas')
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })
-    let detector: BarcodeDetector | null = null
+    setError(null)
+    setCopied(false)
+    lastTokenRef.current = null
+    setIsRunning(true)
+    setStatus('カメラを初期化しています…')
 
-    const startScanner = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment'
-          }
-        })
-        if (!isMounted) return
+    if (shouldScan) {
+      restartScanner()
+    } else {
+      setShouldScan(true)
+    }
+  }, [supportsCamera, shouldScan, restartScanner])
 
-        const video = videoRef.current
-        if (!video) throw new Error('Video element unavailable')
-        video.srcObject = stream
-        await video.play()
+  const { ref: videoRef } = useZxing({
+    paused: !shouldScan,
+    timeBetweenDecodingAttempts: 200,
+    onDecodeResult: (result) => {
+      const text = result.getText()
+      if (text) {
+        void handleDetectedToken(text)
+      }
+    },
+    onDecodeError: (err) => {
+      if (!isIgnorableZXingError(err)) {
+        console.warn('ZXing scan error', err)
+      }
+    },
+    onError: (err) => {
+      console.error('Failed to start QR scanner', err)
+      if (!mountedRef.current) return
+      stopAll()
+      setStatus('')
+      setError(resolveScannerErrorMessage(err))
+    },
+    constraints: {
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' }
+      }
+    }
+  })
 
-        if (!ctx) {
-          throw new Error('Canvas context 初期化に失敗しました。')
-        }
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
 
-        if (supportsBarcodeDetector) {
-          const DetectorCtor = window.BarcodeDetector
-          if (!DetectorCtor) {
-            throw new Error('BarcodeDetector API is not available in this browser.')
-          }
-          detector = new DetectorCtor({ formats: ['qr_code'] })
-        } else {
-          throw new Error(
-            'このブラウザは QR コードの自動検出に対応していません。別のブラウザをご利用ください。'
-          )
-        }
-
+    const handleReady = () => {
+      if (mountedRef.current && shouldScan) {
         setStatus('QRコードを枠内にかざしてください。')
-
-        const scan = async () => {
-          if (!isMounted || !detector) return
-          const currentVideo = videoRef.current
-          if (
-            currentVideo &&
-            currentVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
-            currentVideo.videoWidth > 0 &&
-            currentVideo.videoHeight > 0
-          ) {
-            canvas.width = currentVideo.videoWidth
-            canvas.height = currentVideo.videoHeight
-            ctx.drawImage(currentVideo, 0, 0, canvas.width, canvas.height)
-            try {
-              const barcodes = await detector.detect(canvas)
-              if (barcodes.length > 0) {
-                const rawValue = barcodes[0]?.rawValue ?? ''
-                if (rawValue && rawValue !== lastTokenRef.current) {
-                  lastTokenRef.current = rawValue
-                  setScannedToken(rawValue)
-                  storeScannedToken(rawValue)
-                  setStatus('QRコードを検出しました。')
-                  if (navigator.clipboard?.writeText) {
-                    try {
-                      await navigator.clipboard.writeText(rawValue)
-                      setCopied(true)
-                    } catch {
-                      setCopied(false)
-                    }
-                  } else {
-                    setCopied(false)
-                  }
-                  return
-                }
-              }
-            } catch (detectError) {
-              console.warn('Failed to detect QR', detectError)
-            }
-          }
-          if (!lastTokenRef.current) {
-            rafId = requestAnimationFrame(scan)
-          }
-        }
-
-        rafId = requestAnimationFrame(scan)
-      } catch (err) {
-        console.error(err)
-        if (!isMounted) return
-        setStatus('')
-        setError(
-          err instanceof Error ? err.message : 'カメラの初期化に失敗しました。権限を確認してください。'
-        )
       }
     }
 
-    void startScanner()
+    video.addEventListener('loadeddata', handleReady)
+    video.addEventListener('playing', handleReady)
 
     return () => {
-      isMounted = false
-      if (rafId) cancelAnimationFrame(rafId)
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop())
-      }
+      video.removeEventListener('loadeddata', handleReady)
+      video.removeEventListener('playing', handleReady)
     }
-  }, [supportsCamera, supportsBarcodeDetector])
+  }, [videoRef, shouldScan])
+
+  useEffect(() => {
+    if (!supportsCamera) {
+      setStatus('')
+      setError('お使いのブラウザでカメラが利用できません。通常のQRリーダーで読み取り、トークンを手入力してください。')
+    }
+  }, [supportsCamera])
+
+  useEffect(() => {
+    return () => {
+      stopAll()
+      mountedRef.current = false
+    }
+  }, [stopAll])
 
   const handleDashboardRedirect = () => {
+    stopAll()
     window.location.href = '/'
   }
 
@@ -171,8 +204,13 @@ const QrScannerPage = () => {
       <main className="app-main scanner-main">
         <section className="card scanner-card">
           <h2>カメラで読み取る</h2>
+          <div className="button-row">
+            <button type="button" onClick={startScanner} disabled={!supportsCamera}>
+              {isRunning ? 'カメラを再起動' : 'カメラを開始'}
+            </button>
+          </div>
           <div className="scanner-video-wrapper">
-            <video ref={videoRef} playsInline muted className="scanner-video" />
+            <video ref={videoRef} autoPlay playsInline muted className="scanner-video" />
           </div>
           {status ? <p className="status info">{status}</p> : null}
           {copied ? (
@@ -195,8 +233,8 @@ const QrScannerPage = () => {
         <section className="card scanner-card">
           <h2>使い方</h2>
           <ol className="scanner-steps">
-            <li>チームデバイスでこのページを開き「カメラの利用」を許可する。</li>
-            <li>表示された枠内に宝箱のQRコードをかざす。</li>
+            <li>「カメラを開始」を押してブラウザのカメラ利用を許可します。</li>
+            <li>表示された枠内に宝箱のQRコードをかざしてください。</li>
             <li>
               読み取ったトークンは自動的にコピー・保存されます。
               設定後は「ダッシュボードで提出する」からメイン画面に戻り、合言葉と一緒に提出してください。
