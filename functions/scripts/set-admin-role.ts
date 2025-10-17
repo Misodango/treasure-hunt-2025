@@ -9,7 +9,6 @@ const run = async () => {
   initializeApp({ credential: applicationDefault() })
 
   await getAuth().setCustomUserClaims(uid, { role: 'admin' })
-  console.log(`Set admin role for ${uid}`)
 }
 
 run().catch((error) => {

@@ -85,9 +85,6 @@ const requireRole = (request: CallableRequest<unknown>, roles: Array<'admin' | '
   const uid = request.auth?.uid
   const role = request.auth?.token?.role as string | undefined
   if (!uid || !role || !roles.includes(role as 'admin' | 'leader')) {
-    if(!uid) logger.warn('Unauthenticated request')
-    else if(!role) logger.warn('Role is not defined')
-    else logger.warn(`Insufficient permissions: uid=${uid} role=${role}`)
     throw new HttpsError('permission-denied', 'Insufficient permissions.')
   }
   return { uid, role: role as 'admin' | 'leader' }
@@ -213,7 +210,6 @@ export const setUserRole = onCall<SetUserRolePayload>(async (request) => {
 })
 
 export const generateLocationQr = onCall<GenerateQrPayload>(async (request) => {
-    console.log('request', request)
   requireRole(request, ['admin'])
 
   const { locationId, expiresAt } = request.data ?? {}
