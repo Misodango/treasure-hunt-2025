@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import LoadingSpinner from './LoadingSpinner'
 import { useAuth } from '../hooks/useAuth'
 import { useTeamData } from '../hooks/useTeamData'
 import { submitClaim } from '../lib/claim'
 import { useLocations } from '../hooks/useLocations'
+import { pullStoredScannedToken } from '../lib/qr'
 
 type ClaimResultState = {
   message: string
@@ -35,6 +36,20 @@ const TeamDashboard = () => {
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<ClaimResultState | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [prefilledNotice, setPrefilledNotice] = useState<string | null>(null)
+
+  const openScannerPage = () => {
+    if (typeof window === 'undefined') return
+    window.location.href = '/qr-scan'
+  }
+
+  useEffect(() => {
+    const stored = pullStoredScannedToken()
+    if (stored) {
+      setToken(stored)
+      setPrefilledNotice('QRスキャナーからトークンを読み取り済みです。内容を確認して提出してください。')
+    }
+  }, [])
 
   const solvedList = useMemo(() => {
     if (!team?.solved) return []
@@ -113,6 +128,10 @@ const TeamDashboard = () => {
       </header>
 
       <form className="form-vertical" onSubmit={handleSubmit}>
+        {prefilledNotice ? <p className="status info">{prefilledNotice}</p> : null}
+        <button type="button" className="secondary" onClick={openScannerPage}>
+          QRスキャナーを開く
+        </button>
         <label className="form-field">
           <span>QRトークン</span>
           <input
