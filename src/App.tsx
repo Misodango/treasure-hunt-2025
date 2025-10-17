@@ -9,6 +9,7 @@ import TeamDashboard from './components/TeamDashboard'
 import AdminDashboard from './components/AdminDashboard'
 import LoginScreen from './components/LoginScreen'
 import LoadingSpinner from './components/LoadingSpinner'
+import QrScannerPage from './components/QrScannerPage'
 
 const MainApp = () => {
   const { user, role, loading: authLoading, signOut } = useAuth()
@@ -87,10 +88,19 @@ const MainApp = () => {
   )
 }
 
-const App = () => (
-  <AuthProvider>
-    <MainApp />
-  </AuthProvider>
-)
+const App = () => {
+  const isScannerRoute =
+    typeof window !== 'undefined' && window.location.pathname.startsWith('/qr-scan')
+
+  if (isScannerRoute) {
+    return <QrScannerPage />
+  }
+
+  return (
+    <AuthProvider>
+      <MainApp />
+    </AuthProvider>
+  )
+}
 
 export default App

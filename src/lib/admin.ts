@@ -64,3 +64,27 @@ export const setFreezeState = (isFrozen: boolean) => {
   const callable = httpsCallable<{ frozen: boolean }, { ok: true }>(functions, 'setFreezeState')
   return callable({ frozen: isFrozen }).then((res) => res.data)
 }
+
+export type SetUserRolePayload = {
+  email?: string
+  uid?: string
+  role: 'leader' | 'admin' | 'none'
+  teamName?: string
+  teamTag?: string
+}
+
+export type SetUserRoleResponse = {
+  uid: string
+  email: string | null
+  role: 'leader' | 'admin' | null
+  teamUpdated: boolean
+}
+
+export const setUserRole = async (payload: SetUserRolePayload): Promise<SetUserRoleResponse> => {
+  const app = getApp()
+  const region = import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION as string | undefined
+  const functions = region ? getFunctions(app, region) : getFunctions(app)
+  const callable = httpsCallable<SetUserRolePayload, SetUserRoleResponse>(functions, 'setUserRole')
+  const { data } = await callable(payload)
+  return data
+}

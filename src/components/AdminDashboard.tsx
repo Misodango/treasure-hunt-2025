@@ -8,6 +8,7 @@ import {
   deleteLocationById,
   generateSignedQr,
   setFreezeState,
+  setUserRole,
   updateLocationById,
   updateRuntimeSetting
 } from '../lib/admin'
@@ -19,6 +20,14 @@ type QrPreview = {
   pngBase64: string
   token: string
   nonce: string
+}
+
+type RoleForm = {
+  email: string
+  uid: string
+  role: 'leader' | 'admin' | 'none'
+  teamName: string
+  teamTag: string
 }
 
 const toDate = (value: RuntimeSettings[keyof RuntimeSettings]) => {
@@ -65,6 +74,14 @@ const AdminDashboard = () => {
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [qrPreview, setQrPreview] = useState<QrPreview | null>(null)
+  const createInitialRoleForm = (): RoleForm => ({
+    email: '',
+    uid: '',
+    role: 'leader',
+    teamName: '',
+    teamTag: ''
+  })
+  const [roleForm, setRoleForm] = useState<RoleForm>(() => createInitialRoleForm())
 
   const handleCreateLocation = async (evt: FormEvent<HTMLFormElement>) => {
     evt.preventDefault()
@@ -183,6 +200,56 @@ const AdminDashboard = () => {
     }
   }
 
+  const handleRoleSubmit = async (evt: FormEvent<HTMLFormElement>) => {
+    evt.preventDefault()
+    const trimmedEmail = roleForm.email.trim()
+    const trimmedUid = roleForm.uid.trim()
+    if (!trimmedEmail && !trimmedUid) {
+      setError('ロールを更新する対象のメールアドレスまたはUIDを入力してください。')
+      return
+    }
+    if (
+      roleForm.role === 'leader' &&
+      (!roleForm.teamName.trim() || !roleForm.teamTag.trim())
+    ) {
+      setError('リーダーに設定する場合はチーム名とTeamTagが必要です。')
+      return
+    }
+
+    setPending(true)
+    setStatus(null)
+    setError(null)
+    try {
+      const response = await setUserRole({
+        email: trimmedEmail || undefined,
+        uid: trimmedUid || undefined,
+        role: roleForm.role,
+        teamName: roleForm.teamName.trim() || undefined,
+        teamTag: roleForm.teamTag.trim() || undefined
+      })
+      const identifier = response.email ?? response.uid
+      const roleLabel =
+        response.role === 'leader'
+          ? 'リーダー'
+          : response.role === 'admin'
+            ? '管理者'
+            : 'ロールなし'
+      const teamMessage =
+        response.role === 'leader'
+          ? response.teamUpdated
+            ? '（チーム情報を更新しました）'
+            : ''
+          : ''
+      setStatus(`ロールを更新しました: ${identifier} → ${roleLabel}${teamMessage}`)
+      setRoleForm(createInitialRoleForm())
+    } catch (err) {
+      console.error(err)
+      setError('ロールの更新に失敗しました。入力内容と権限を確認してください。')
+    } finally {
+      setPending(false)
+    }
+  }
+
   return (
     <section className="card">
       <h2>管理者ダッシュボード</h2>
@@ -190,6 +257,108 @@ const AdminDashboard = () => {
       {pending ? <LoadingSpinner label="処理中..." /> : null}
       {status ? <p className="status success">{status}</p> : null}
       {error ? <p className="status error">{error}</p> : null}
+
+      <section className="subsection">
+        <h3>ユーザーロール管理</h3>
+        <form className="grid grid-2" onSubmit={handleRoleSubmit}>
+          <label className="form-field">
+            <span>メールアドレス</span>
+            <input
+              type="email"
+              value={roleForm.email}
+              onChange={(event) =>
+                setRoleForm((prev) => ({
+                  ...prev,
+                  email: event.target.value
+                }))
+              }
+              placeholder="user@example.com"
+              disabled={pending}
+            />
+          </label>
+          <label className="form-field">
+            <span>UID（任意）</span>
+            <input
+              type="text"
+              value={roleForm.uid}
+              onChange={(event) =>
+                setRoleForm((prev) => ({
+                  ...prev,
+                  uid: event.target.value
+                }))
+              }
+              placeholder="Firebase Auth UID"
+              disabled={pending}
+            />
+          </label>
+          <label className="form-field">
+            <span>付与するロール</span>
+            <select
+              value={roleForm.role}
+              onChange={(event) =>
+                setRoleForm((prev) => ({
+                  ...prev,
+                  role: event.target.value as RoleForm['role']
+                }))
+              }
+              disabled={pending}
+            >
+              <option value="leader">leader（チーム用）</option>
+              <option value="admin">admin（管理者）</option>
+              <option value="none">ロール解除</option>
+            </select>
+          </label>
+          <label className="form-field">
+            <span>チーム名</span>
+            <input
+              type="text"
+              value={roleForm.teamName}
+              onChange={(event) =>
+                setRoleForm((prev) => ({
+                  ...prev,
+                  teamName: event.target.value
+                }))
+              }
+              placeholder="例: 明和A班"
+              disabled={pending || roleForm.role !== 'leader'}
+              required={roleForm.role === 'leader'}
+            />
+          </label>
+          <label className="form-field">
+            <span>TeamTag</span>
+            <input
+              type="text"
+              value={roleForm.teamTag}
+              onChange={(event) =>
+                setRoleForm((prev) => ({
+                  ...prev,
+                  teamTag: event.target.value
+                }))
+              }
+              placeholder="例: MEIWA-A"
+              disabled={pending || roleForm.role !== 'leader'}
+              required={roleForm.role === 'leader'}
+            />
+          </label>
+          <div className="button-row">
+            <button type="submit" disabled={pending}>
+              ロールを更新
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setRoleForm(createInitialRoleForm())}
+              disabled={pending}
+            >
+              入力内容をクリア
+            </button>
+          </div>
+        </form>
+        <p className="description">
+          管理者権限を付与/解除できます。リーダーに設定する場合、チーム情報が `teams` コレクションに作成・更新されます。
+          ロール変更後は対象ユーザーに再ログインしてもらい最新の権限を反映してください。
+        </p>
+      </section>
 
       <section className="subsection">
         <h3>イベント時刻</h3>

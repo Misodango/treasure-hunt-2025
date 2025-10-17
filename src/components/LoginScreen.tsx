@@ -35,14 +35,21 @@ const LoginScreen = () => {
       {loading ? (
         <LoadingSpinner label="認証状態を確認中..." />
       ) : user ? (
-        <p className="status info">
-          ログイン中: <strong>{user.email}</strong> / ロール: {role ?? '未付与'}
-        </p>
-      ) : 
+        <>
+          <p className="status info">
+            ログイン中: <strong>{user.email}</strong> / ロール: {role ?? '未付与'}
+          </p>
+          {!role ? (
+            <p className="status warning">
+              ロールが付与されると提出用ダッシュボードが表示されます。管理者にチーム登録を依頼してください。
+            </p>
+          ) : null}
+        </>
+      ) : (
         <button type="button" onClick={handleGoogleSignin} disabled={pending}>
           Googleでログイン
         </button>
-      }
+      )}
     </section>
   )
 }
