@@ -21,10 +21,14 @@ export const useLocations = () => {
     const unsubscribe = onSnapshot(
       ref,
       (snapshot) => {
-        const next = snapshot.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...(docSnap.data() as Omit<LocationDoc, 'id'>)
-        }))
+        const next = snapshot.docs.map((docSnap) => {
+          const raw = docSnap.data() as Omit<LocationDoc, 'id'> & { isActive?: boolean }
+          return {
+            id: docSnap.id,
+            ...raw,
+            isActive: raw.isActive ?? true
+          }
+        })
         setData(next)
         setLoading(false)
       },

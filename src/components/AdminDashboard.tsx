@@ -430,7 +430,12 @@ const AdminDashboard = () => {
                     <strong>{location.title}</strong>
                     <span className="location-meta">
                       難易度: {location.difficulty} / 基礎点: {location.basePoints} /{' '}
-                      {location.isActive ? '有効' : '無効'}
+                      <span
+                        className={`status-pill ${location.isActive ? 'active' : 'inactive'}`}
+                      >
+                        <span className="status-dot" aria-hidden="true" />
+                        {location.isActive ? '有効' : '無効'}
+                      </span>
                     </span>
                   </div>
                 </button>
@@ -484,14 +489,19 @@ const AdminDashboard = () => {
                 }
               />
             </label>
-            <label className="form-field checkbox">
-              <input
-                type="checkbox"
-                defaultChecked={selectedLocation.isActive}
-                onChange={(event) => handleUpdateLocation({ isActive: event.target.checked })}
-              />
-              <span>有効化</span>
-            </label>
+            <div className="form-field">
+              <span>ステータス</span>
+              <button
+                type="button"
+                className={`toggle-pill ${selectedLocation.isActive ? 'active' : 'inactive'}`}
+                aria-pressed={selectedLocation.isActive}
+                onClick={() => handleUpdateLocation({ isActive: !selectedLocation.isActive })}
+                disabled={pending}
+              >
+                <span className="status-dot" aria-hidden="true" />
+                {selectedLocation.isActive ? '有効' : '無効'}
+              </button>
+            </div>
           </div>
           <div className="button-row">
             <button type="button" className="danger" onClick={handleDeleteLocation}>
@@ -595,19 +605,24 @@ const AdminDashboard = () => {
               required
             />
           </label>
-          <label className="form-field checkbox">
-            <input
-              type="checkbox"
-              checked={newLocation.isActive}
-              onChange={(event) =>
+          <div className="form-field">
+            <span>ステータス</span>
+            <button
+              type="button"
+              className={`toggle-pill ${newLocation.isActive ? 'active' : 'inactive'}`}
+              aria-pressed={newLocation.isActive}
+              onClick={() =>
                 setNewLocation((prev) => ({
                   ...prev,
-                  isActive: event.target.checked
+                  isActive: !prev.isActive
                 }))
               }
-            />
-            <span>有効化</span>
-          </label>
+              disabled={pending}
+            >
+              <span className="status-dot" aria-hidden="true" />
+              {newLocation.isActive ? '有効' : '無効'}
+            </button>
+          </div>
           <div className="button-row">
             <button type="submit">追加</button>
           </div>
