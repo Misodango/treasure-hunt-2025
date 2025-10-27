@@ -120,12 +120,21 @@ const TeamDashboard = () => {
           <p className="description">
             TeamTag: <strong>{team.teamTag}</strong>
           </p>
+          <p className="description">
+            試合: <strong>{team.matchName ?? '未設定'}</strong> / 組:&nbsp;
+            <strong>{team.groupName ?? '未設定'}</strong>
+          </p>
         </div>
         <div className="score-box">
           <span className="score-label">現在スコア</span>
           <span className="score-value">{team.score} pt</span>
         </div>
       </header>
+      {!team.matchId || !team.groupId ? (
+        <p className="status warning">
+          試合または組が未設定です。管理者に連絡して割り当てを確認してください。
+        </p>
+      ) : null}
 
       <form className="form-vertical" onSubmit={handleSubmit}>
         {prefilledNotice ? <p className="status info">{prefilledNotice}</p> : null}
