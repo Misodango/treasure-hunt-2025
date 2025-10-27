@@ -21,6 +21,8 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",
+    "@types/glob": "^9.0.0",
+    "@types/minimatch": "^5.1.2",
     "@types/node": "^24.6.0",
     "@types/qrcode": "^1.5.5",
     "eslint": "^9.36.0",

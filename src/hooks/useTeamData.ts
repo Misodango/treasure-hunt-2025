@@ -13,6 +13,10 @@ export type TeamDoc = {
   teamTag: string
   score: number
   solved?: Record<string, TeamSolveEntry>
+  matchId?: string | null
+  matchName?: string | null
+  groupId?: string | null
+  groupName?: string | null
 }
 
 export const useTeamData = (teamId: string | null | undefined) => {

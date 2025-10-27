@@ -9,6 +9,11 @@ export type LocationInput = {
   basePoints: number
   boxKeyword: string
   isActive: boolean
+  matchId: string
+}
+
+export type LocationUpdateInput = Partial<Omit<LocationInput, 'matchId'>> & {
+  matchId?: string | null
 }
 
 export const createLocation = (input: LocationInput) =>
@@ -17,13 +22,79 @@ export const createLocation = (input: LocationInput) =>
     createdAt: new Date()
   })
 
-export const updateLocationById = (id: string, input: Partial<LocationInput>) =>
-  updateDoc(doc(db, 'locations', id), {
+export const updateLocationById = (id: string, input: LocationUpdateInput) => {
+  const payload = Object.fromEntries(
+    Object.entries({
+      ...input,
+      updatedAt: new Date()
+    }).filter(([, value]) => value !== undefined)
+  )
+  return updateDoc(doc(db, 'locations', id), payload)
+}
+
+export const deleteLocationById = (id: string) => deleteDoc(doc(db, 'locations', id))
+
+export type MatchInput = {
+  name: string
+  order: number
+  isActive: boolean
+}
+
+export const createMatch = (input: MatchInput) =>
+  addDoc(collection(db, 'matches'), {
     ...input,
+    createdAt: new Date(),
     updatedAt: new Date()
   })
 
-export const deleteLocationById = (id: string) => deleteDoc(doc(db, 'locations', id))
+export const updateMatchById = (id: string, input: Partial<MatchInput>) => {
+  const payload = Object.fromEntries(
+    Object.entries({
+      ...input,
+      updatedAt: new Date()
+    }).filter(([, value]) => value !== undefined)
+  )
+  return updateDoc(doc(db, 'matches', id), payload)
+}
+
+export const deleteMatchById = (id: string) => deleteDoc(doc(db, 'matches', id))
+
+export type GroupInput = {
+  matchId: string
+  name: string
+  order: number
+  startAt: Date | null
+  endAt: Date | null
+  isActive: boolean
+}
+
+const normalizeTemporalField = (value: Date | null | undefined) => {
+  if (value === undefined) return undefined
+  return value ?? null
+}
+
+export const createGroup = (input: GroupInput) =>
+  addDoc(collection(db, 'groups'), {
+    ...input,
+    startAt: normalizeTemporalField(input.startAt),
+    endAt: normalizeTemporalField(input.endAt),
+    createdAt: new Date(),
+    updatedAt: new Date()
+  })
+
+export const updateGroupById = (id: string, input: Partial<GroupInput>) => {
+  const payload = Object.fromEntries(
+    Object.entries({
+      ...input,
+      startAt: normalizeTemporalField(input.startAt),
+      endAt: normalizeTemporalField(input.endAt),
+      updatedAt: new Date()
+    }).filter(([, value]) => value !== undefined)
+  )
+  return updateDoc(doc(db, 'groups', id), payload)
+}
+
+export const deleteGroupById = (id: string) => deleteDoc(doc(db, 'groups', id))
 
 export type GenerateQrPayload = {
   locationId: string
@@ -71,6 +142,8 @@ export type SetUserRolePayload = {
   role: 'leader' | 'admin' | 'none'
   teamName?: string
   teamTag?: string
+  matchId?: string
+  groupId?: string
 }
 
 export type SetUserRoleResponse = {

@@ -67,6 +67,9 @@
 
 * 作成/編集/無効化（`title, difficulty, basePoints, boxKeyword, isActive`）。
 * **署名付きQR**生成（`locId|nonce|exp|signature`）とPNGダウンロード。
+* 試合 (`matches`)・組 (`groups`) を編成し、開始/終了時刻・表示順・有効状態を管理。
+* 各ロケーションには所属する試合 (`matchId`) を必須で紐付ける。
+* リーダー割当時にチームへ試合・組を設定（未割当チームはランキングで警告表示）。
 
 ### 5.3 提出（claim）
 
@@ -76,6 +79,7 @@
   * 署名・有効期限・`locId` の検証。
   * `providedTeamTag === team.teamTag`。
   * `providedKeyword === locations[locId].boxKeyword`。
+  * `locations[locId].matchId === team.matchId`（相違時は不正提出として拒否）。
   * チームが未解済（同一`locId`で二重加点禁止）。
 * 成功時: スコア加算（`basePoints × 難易度係数`）、提出履歴保存。
 * 凍結中は**公開順位表を更新しない**（内部スコアは更新）。
@@ -84,6 +88,8 @@
 
 * 公開: `leaderboard_public/runtime` を購読。
 * 凍結中: **非表示**または**マスク**表示（「ラストスパート中」）。
+* 試合→組セレクタで閲覧し、同一点数の場合は**組の開始時刻から最終提出までの経過時間が短いチームを優先**表示。
+* 未割当にチームが存在する場合は管理者向け警告を表示。
 * 終了後: 即時に確定順位公開。
 
 ### 5.5 残り時間
@@ -116,17 +122,39 @@
 ## 8. データモデル（Firestore）
 
 ```
+/matches/{matchId}
+  name: string
+  order: number
+  isActive: boolean
+  createdAt: Timestamp
+  updatedAt: Timestamp
+
+/groups/{groupId}
+  matchId: string
+  name: string
+  order: number
+  startAt: Timestamp | null
+  endAt?: Timestamp | null
+  isActive: boolean
+  createdAt: Timestamp
+  updatedAt: Timestamp
+
 /teams/{teamId}
   name: string
   leaderEmail: string
   teamTag: string                // sha256(teamId).hex.slice(0,5)
   score: number
+  matchId?: string | null
+  matchName?: string | null
+  groupId?: string | null
+  groupName?: string | null
   solved: { [locId]: { at: Timestamp, points: number } }
   createdAt: Timestamp
 
 /locations/{locId}
+  matchId: string
   title: string
-  difficulty: 'EASY' | 'MEDIUM' | 'HARD'
+  difficulty: number             // 1〜5 の難易度スケール
   basePoints: number             // 例: 100, 150, 200
   boxKeyword: string             // 紙に印刷する固定キーワード
   isActive: boolean
@@ -150,8 +178,31 @@
   updatedAt: Timestamp
 
 /leaderboard_public/runtime
-  rows: Array<{ rank: number, teamName: string, score: number, lastSolveAt: Timestamp }>
-  frozen: boolean
+  schemaVersion: 2
+  matches: Array<{
+    id: string
+    name: string
+    order: number
+    isActive: boolean
+    groups: Array<{
+      id: string
+      name: string
+      order: number
+      startAt: Timestamp | null
+      endAt?: Timestamp | null
+      isActive: boolean
+      entries: Array<{
+        teamId: string
+        teamName: string
+        score: number
+        lastSolveAt?: Timestamp | null
+        elapsedSeconds?: number | null
+        solvedCount?: number
+      }>
+    }>
+  }>
+  masked: boolean
+  unassignedNotice: boolean
   updatedAt: Timestamp
 ```
 
