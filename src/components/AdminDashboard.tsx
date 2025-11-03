@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import LoadingSpinner from './LoadingSpinner'
 import { useLocations } from '../hooks/useLocations'
+import { useTeams } from '../hooks/useTeams'
 import { useRuntimeSettings } from '../hooks/useRuntimeSettings'
 import { useMatchHierarchy } from '../hooks/useMatches'
 import {
@@ -14,6 +15,7 @@ import {
   generateSignedQr,
   setFreezeState,
   setUserRole,
+  setTeamGroupAssignment,
   updateGroupById,
   updateLocationById,
   updateMatchById,
@@ -73,6 +75,12 @@ const AdminDashboard = () => {
     loading: matchesLoading,
     error: matchesError
   } = useMatchHierarchy()
+  const adminTabs = [
+    { id: 'roles', label: 'ユーザーロール管理' },
+    { id: 'teams', label: 'チーム割り当て' },
+    { id: 'matches', label: '試合・組管理' }
+  ] as const
+  const [activeTab, setActiveTab] = useState<(typeof adminTabs)[number]['id']>('roles')
   const [selectedMatchId, setSelectedMatchId] = useState<string | null>(null)
   const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
   const { data: locations, loading: locationsLoading, error: locationsError } = useLocations(
@@ -83,6 +91,11 @@ const AdminDashboard = () => {
     loading: runtimeLoading,
     error: runtimeError
   } = useRuntimeSettings()
+  const {
+    data: teams,
+    loading: teamsLoading,
+    error: teamsError
+  } = useTeams()
 
   const [newMatch, setNewMatch] = useState({
     name: '',
@@ -193,6 +206,7 @@ const AdminDashboard = () => {
     groupId: ''
   })
   const [roleForm, setRoleForm] = useState<RoleForm>(() => createInitialRoleForm())
+  const [teamAssignments, setTeamAssignments] = useState<Record<string, { matchId: string; groupId: string }>>({})
 
   useEffect(() => {
     if (matchHierarchy.length === 0) return
@@ -226,6 +240,49 @@ const AdminDashboard = () => {
     [matchHierarchy, roleForm.matchId]
   )
 
+  useEffect(() => {
+    setTeamAssignments((prev) => {
+      if (teams.length === 0) {
+        return Object.keys(prev).length === 0 ? prev : {}
+      }
+      let changed = false
+      const next: Record<string, { matchId: string; groupId: string }> = {}
+      const matchMap = new Map(matchHierarchy.map((match) => [match.id, match]))
+
+      for (const team of teams) {
+        const current = prev[team.id]
+        let matchId = current?.matchId ?? team.matchId ?? ''
+        if (matchId && !matchMap.has(matchId)) {
+          matchId = ''
+        }
+        if (!matchId && matchHierarchy.length === 1) {
+          matchId = matchHierarchy[0]?.id ?? ''
+        }
+        const match = matchId ? matchMap.get(matchId) ?? null : null
+
+        let groupId = current?.groupId ?? team.groupId ?? ''
+        if (match) {
+          if (!match.groups.some((group) => group.id === groupId)) {
+            groupId = match.groups[0]?.id ?? ''
+          }
+        } else {
+          groupId = ''
+        }
+
+        next[team.id] = { matchId, groupId }
+        if (!current || current.matchId !== matchId || current.groupId !== groupId) {
+          changed = true
+        }
+      }
+
+      if (Object.keys(prev).length !== Object.keys(next).length) {
+        changed = true
+      }
+
+      return changed ? next : prev
+    })
+  }, [teams, matchHierarchy])
+
   const matchNameMap = useMemo(() => {
     const map = new Map<string, string>()
     for (const match of matchHierarchy) {
@@ -233,6 +290,67 @@ const AdminDashboard = () => {
     }
     return map
   }, [matchHierarchy])
+
+  const matchLookup = useMemo(() => {
+    const map = new Map(matchHierarchy.map((match) => [match.id, match]))
+    return map
+  }, [matchHierarchy])
+
+  const handleTeamMatchChange = (teamId: string, nextMatchId: string) => {
+    setTeamAssignments((prev) => {
+      const next = { ...prev }
+      const match = matchLookup.get(nextMatchId) ?? null
+      next[teamId] = {
+        matchId: nextMatchId,
+        groupId: match?.groups[0]?.id ?? ''
+      }
+      return next
+    })
+  }
+
+  const handleTeamGroupChange = (teamId: string, nextGroupId: string) => {
+    setTeamAssignments((prev) => {
+      const current = prev[teamId] ?? { matchId: '', groupId: '' }
+      return {
+        ...prev,
+        [teamId]: {
+          matchId: current.matchId,
+          groupId: nextGroupId
+        }
+      }
+    })
+  }
+
+  const handleTeamAssignmentSubmit = async (teamId: string) => {
+    const assignment = teamAssignments[teamId]
+    const team = teams.find((item) => item.id === teamId)
+    if (!assignment?.matchId || !assignment.groupId) {
+      setError('試合と組を選択してください。')
+      return
+    }
+    setPending(true)
+    setStatus(null)
+    setError(null)
+    try {
+      await setTeamGroupAssignment({
+        teamId,
+        matchId: assignment.matchId,
+        groupId: assignment.groupId
+      })
+      const matchInfo = matchLookup.get(assignment.matchId)
+      const groupInfo = matchInfo?.groups.find((group) => group.id === assignment.groupId) ?? null
+      const matchLabel = matchInfo?.name ?? assignment.matchId
+      const groupLabel = groupInfo?.name ?? assignment.groupId
+      setStatus(
+        `${team?.name ?? teamId} を ${matchLabel} / ${groupLabel} に割り当てました。`
+      )
+    } catch (err) {
+      console.error(err)
+      setError('チームの割り当て更新に失敗しました。')
+    } finally {
+      setPending(false)
+    }
+  }
 
   const handleCreateLocation = async (evt: FormEvent<HTMLFormElement>) => {
     evt.preventDefault()
@@ -602,107 +720,859 @@ const AdminDashboard = () => {
       {status ? <p className="status success">{status}</p> : null}
       {error ? <p className="status error">{error}</p> : null}
 
-      <section className="subsection">
-        <h3>ユーザーロール管理</h3>
-        <form className="grid grid-2" onSubmit={handleRoleSubmit}>
-          <label className="form-field">
-            <span>メールアドレス</span>
-            <input
-              type="email"
-              value={roleForm.email}
-              onChange={(event) =>
-                setRoleForm((prev) => ({
-                  ...prev,
-                  email: event.target.value
-                }))
-              }
-              placeholder="user@example.com"
-              disabled={pending}
-            />
-          </label>
-          <label className="form-field">
-            <span>UID（任意）</span>
-            <input
-              type="text"
-              value={roleForm.uid}
-              onChange={(event) =>
-                setRoleForm((prev) => ({
-                  ...prev,
-                  uid: event.target.value
-                }))
-              }
-              placeholder="Firebase Auth UID"
-              disabled={pending}
-            />
-          </label>
-          <label className="form-field">
-            <span>付与するロール</span>
-            <select
-              value={roleForm.role}
-              onChange={(event) =>
-                setRoleForm((prev) => ({
-                  ...prev,
-                  role: event.target.value as RoleForm['role']
-                }))
-              }
-              disabled={pending}
-            >
-              <option value="leader">leader（チーム用）</option>
-              <option value="admin">admin（管理者）</option>
-              <option value="none">ロール解除</option>
-            </select>
-          </label>
-          <label className="form-field">
-            <span>チーム名</span>
-            <input
-              type="text"
-              value={roleForm.teamName}
-              onChange={(event) =>
-                setRoleForm((prev) => ({
-                  ...prev,
-                  teamName: event.target.value
-                }))
-              }
-              placeholder="例: 明和A班"
-              disabled={pending || roleForm.role !== 'leader'}
-              required={roleForm.role === 'leader'}
-            />
-          </label>
-          <label className="form-field">
-            <span>TeamTag</span>
-            <input
-              type="text"
-              value={roleForm.teamTag}
-              onChange={(event) =>
-                setRoleForm((prev) => ({
-                  ...prev,
-                  teamTag: event.target.value
-                }))
-              }
-              placeholder="例: MEIWA-A"
-              disabled={pending || roleForm.role !== 'leader'}
-              required={roleForm.role === 'leader'}
-            />
-          </label>
-          {roleForm.role === 'leader' ? (
-            <>
+      <div className="tab-switcher">
+        {adminTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={`tab-button ${activeTab === tab.id ? 'active' : ''}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'roles' ? (
+        <section className="subsection">
+          <h3>ユーザーロール管理</h3>
+          <form className="grid grid-2" onSubmit={handleRoleSubmit}>
+            <label className="form-field">
+              <span>メールアドレス</span>
+              <input
+                type="email"
+                value={roleForm.email}
+                onChange={(event) =>
+                  setRoleForm((prev) => ({
+                    ...prev,
+                    email: event.target.value
+                  }))
+                }
+                placeholder="user@example.com"
+                disabled={pending}
+              />
+            </label>
+            <label className="form-field">
+              <span>UID（任意）</span>
+              <input
+                type="text"
+                value={roleForm.uid}
+                onChange={(event) =>
+                  setRoleForm((prev) => ({
+                    ...prev,
+                    uid: event.target.value
+                  }))
+                }
+                placeholder="Firebase Auth UID"
+                disabled={pending}
+              />
+            </label>
+            <label className="form-field">
+              <span>付与するロール</span>
+              <select
+                value={roleForm.role}
+                onChange={(event) =>
+                  setRoleForm((prev) => ({
+                    ...prev,
+                    role: event.target.value as RoleForm['role']
+                  }))
+                }
+                disabled={pending}
+              >
+                <option value="leader">leader（チーム用）</option>
+                <option value="admin">admin（管理者）</option>
+                <option value="none">ロール解除</option>
+              </select>
+            </label>
+            <label className="form-field">
+              <span>チーム名</span>
+              <input
+                type="text"
+                value={roleForm.teamName}
+                onChange={(event) =>
+                  setRoleForm((prev) => ({
+                    ...prev,
+                    teamName: event.target.value
+                  }))
+                }
+                placeholder="例: 明和A班"
+                disabled={pending || roleForm.role !== 'leader'}
+                required={roleForm.role === 'leader'}
+              />
+            </label>
+            <label className="form-field">
+              <span>TeamTag</span>
+              <input
+                type="text"
+                value={roleForm.teamTag}
+                onChange={(event) =>
+                  setRoleForm((prev) => ({
+                    ...prev,
+                    teamTag: event.target.value
+                  }))
+                }
+                placeholder="例: MEIWA-A"
+                disabled={pending || roleForm.role !== 'leader'}
+                required={roleForm.role === 'leader'}
+              />
+            </label>
+            {roleForm.role === 'leader' ? (
+              <>
+                <label className="form-field">
+                  <span>試合</span>
+                  <select
+                    value={roleForm.matchId}
+                    onChange={(event) => {
+                      const nextMatchId = event.target.value
+                      setRoleForm((prev) => {
+                        const match = matchHierarchy.find((item) => item.id === nextMatchId)
+                        return {
+                          ...prev,
+                          matchId: nextMatchId,
+                          groupId: match?.groups[0]?.id ?? ''
+                        }
+                      })
+                    }}
+                    disabled={pending || roleForm.role !== 'leader'}
+                    required={roleForm.role === 'leader'}
+                  >
+                    <option value="">選択してください</option>
+                    {matchHierarchy.map((match) => (
+                      <option key={match.id} value={match.id}>
+                        {match.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>組</span>
+                  <select
+                    value={roleForm.groupId}
+                    onChange={(event) =>
+                      setRoleForm((prev) => ({
+                        ...prev,
+                        groupId: event.target.value
+                      }))
+                    }
+                    disabled={
+                      pending ||
+                      roleForm.role !== 'leader' ||
+                      !roleForm.matchId ||
+                      groupsForRoleForm.length === 0
+                    }
+                    required={roleForm.role === 'leader'}
+                  >
+                    <option value="">選択してください</option>
+                    {groupsForRoleForm.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {group.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
+            <div className="button-row">
+              <button type="submit" disabled={pending}>
+                ロールを更新
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setRoleForm(createInitialRoleForm())}
+                disabled={pending}
+              >
+                入力内容をクリア
+              </button>
+            </div>
+          </form>
+          <p className="description">
+            管理者権限を付与/解除できます。リーダーに設定する場合、チーム情報が `teams` コレクションに作成・更新されます。
+            ロール変更後は対象ユーザーに再ログインしてもらい最新の権限を反映してください。
+          </p>
+        </section>
+      ) : null}
+
+      {activeTab === 'teams' ? (
+        <section className="subsection">
+          <h3>チーム割り当て</h3>
+          {teamsLoading ? (
+            <LoadingSpinner label="チームを読み込み中..." />
+          ) : teamsError ? (
+            <p className="status error">チーム情報の取得に失敗しました。</p>
+          ) : teams.length === 0 ? (
+            <p className="description">登録済みのチームがまだありません。</p>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table className="scoreboard">
+                <thead>
+                  <tr>
+                    <th>チーム</th>
+                    <th>リーダー</th>
+                    <th>TeamTag</th>
+                    <th>試合</th>
+                    <th>組</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teams.map((team) => {
+                    const assignment = teamAssignments[team.id] ?? { matchId: '', groupId: '' }
+                    const selectedMatch = assignment.matchId ? matchLookup.get(assignment.matchId) ?? null : null
+                    const availableGroups = selectedMatch?.groups ?? []
+                    const warning =
+                      !assignment.matchId || !assignment.groupId ? 'status warning small' : undefined
+                    return (
+                      <tr key={team.id}>
+                        <td>
+                          <div>
+                            <strong>{team.name}</strong>
+                            <div className="description small">スコア: {team.score} pt</div>
+                          </div>
+                        </td>
+                        <td>{team.leaderEmail ?? '未設定'}</td>
+                        <td>{team.teamTag || '未設定'}</td>
+                        <td>
+                          <select
+                            value={assignment.matchId}
+                            onChange={(event) => handleTeamMatchChange(team.id, event.target.value)}
+                            disabled={pending || matchHierarchy.length === 0}
+                          >
+                            <option value="">選択してください</option>
+                            {matchHierarchy.map((match) => (
+                              <option key={match.id} value={match.id}>
+                                {match.name}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>
+                          <select
+                            value={assignment.groupId}
+                            onChange={(event) => handleTeamGroupChange(team.id, event.target.value)}
+                            disabled={pending || !assignment.matchId || availableGroups.length === 0}
+                          >
+                            <option value="">選択してください</option>
+                            {availableGroups.map((group) => (
+                              <option key={group.id} value={group.id}>
+                                {group.name}
+                              </option>
+                            ))}
+                          </select>
+                          {warning ? <p className={warning}>未割当です</p> : null}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="small"
+                            onClick={() => handleTeamAssignmentSubmit(team.id)}
+                            disabled={pending || !assignment.matchId || !assignment.groupId}
+                          >
+                            割り当て更新
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="description">
+            割り当てを更新すると、該当チームのランキング集計も即時で再計算されます。
+          </p>
+        </section>
+      ) : null}
+
+      {activeTab === 'matches' ? (
+        <>
+          <section className="subsection">
+            <h3>イベント時刻</h3>
+            {runtimeLoading ? (
+              <LoadingSpinner label="読み込み中..." />
+            ) : runtimeError ? (
+              <p className="status error">設定の取得に失敗しました。</p>
+            ) : (
+              <div className="grid grid-3">
+                <label className="form-field">
+                  <span>開始</span>
+                  <input
+                    type="datetime-local"
+                    defaultValue={toDatetimeLocal(runtimeDoc?.eventStart ?? null)}
+                    onBlur={(event) => handleRuntimeUpdate('eventStart', event.target.value)}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>凍結</span>
+                  <input
+                    type="datetime-local"
+                    defaultValue={toDatetimeLocal(runtimeDoc?.freezeAt ?? null)}
+                    onBlur={(event) => handleRuntimeUpdate('freezeAt', event.target.value)}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>終了</span>
+                  <input
+                    type="datetime-local"
+                    defaultValue={toDatetimeLocal(runtimeDoc?.eventEnd ?? null)}
+                    onBlur={(event) => handleRuntimeUpdate('eventEnd', event.target.value)}
+                  />
+                </label>
+              </div>
+            )}
+            <div className="button-row">
+              <button type="button" onClick={() => handleFreezeToggle(true)}>
+                順位表を凍結
+              </button>
+              <button type="button" className="secondary" onClick={() => handleFreezeToggle(false)}>
+                凍結解除
+              </button>
+            </div>
+          </section>
+
+          <section className="subsection">
+            <h3>試合管理</h3>
+            {matchesLoading ? (
+              <LoadingSpinner label="試合を読み込み中..." />
+            ) : matchesError ? (
+              <p className="status error">試合データの取得に失敗しました。</p>
+            ) : (
+              <>
+                {matchHierarchy.length === 0 ? (
+                  <p className="description">まだ試合が登録されていません。</p>
+                ) : (
+                  <ul className="location-list">
+                    <li
+                      key="match-all"
+                      className={
+                        isAllMatchesSelected
+                          ? 'location-item active'
+                          : 'location-item'
+                      }
+                    >
+                      <button
+                        type="button"
+                        className="location-select"
+                        onClick={() => {
+                          setSelectedMatchId((prev) => (prev === '__ALL__' ? null : '__ALL__'))
+                          setSelectedGroupId(null)
+                        }}
+                      >
+                        <div>
+                          <strong>全ての試合</strong>
+                          <span className="location-meta">ロケーション全件を表示</span>
+                        </div>
+                      </button>
+                    </li>
+                    {matchHierarchy.map((match) => (
+                      <li
+                        key={match.id}
+                        className={
+                          selectedMatchId === match.id
+                            ? 'location-item active'
+                            : 'location-item'
+                        }
+                      >
+                        <button
+                          type="button"
+                          className="location-select"
+                          onClick={() =>
+                            setSelectedMatchId((prev) => (prev === match.id ? null : match.id))
+                          }
+                        >
+                          <div>
+                            <strong>{match.name}</strong>
+                            <span className="location-meta">
+                              順番: {match.order} / 組数: {match.groups.length}{' '}
+                              <span className={`status-pill ${match.isActive ? 'active' : 'inactive'}`}>
+                                <span className="status-dot" aria-hidden="true" />
+                                {match.isActive ? '有効' : '無効'}
+                              </span>
+                            </span>
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {isAllMatchesSelected || !selectedMatch ? (
+                  <p className="description">試合を選択すると詳細を編集できます。</p>
+                ) : (
+                  <div className="grid grid-2">
+                    <label className="form-field">
+                      <span>試合名</span>
+                      <input
+                        type="text"
+                        defaultValue={selectedMatch.name}
+                        onBlur={(event) => handleUpdateMatch({ name: event.target.value })}
+                        disabled={pending}
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>表示順</span>
+                      <input
+                        type="number"
+                        min={1}
+                        defaultValue={selectedMatch.order}
+                        onBlur={(event) =>
+                          handleUpdateMatch({ order: Number(event.target.value) || selectedMatch.order })
+                        }
+                        disabled={pending}
+                      />
+                    </label>
+                    <div className="form-field">
+                      <span>ステータス</span>
+                      <button
+                        type="button"
+                        className={`toggle-pill ${selectedMatch.isActive ? 'active' : 'inactive'}`}
+                        aria-pressed={selectedMatch.isActive}
+                        onClick={() => handleUpdateMatch({ isActive: !selectedMatch.isActive })}
+                        disabled={pending}
+                      >
+                        <span className="status-dot" aria-hidden="true" />
+                        {selectedMatch.isActive ? '有効' : '無効'}
+                      </button>
+                    </div>
+                    <div className="button-row">
+                      <button type="button" className="danger" onClick={handleDeleteMatch} disabled={pending}>
+                        試合を削除
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+            <form className="grid grid-2" onSubmit={handleCreateMatch}>
+              <label className="form-field">
+                <span>新規試合名</span>
+                <input
+                  type="text"
+                  value={newMatch.name}
+                  onChange={(event) =>
+                    setNewMatch((prev) => ({
+                      ...prev,
+                      name: event.target.value
+                    }))
+                  }
+                  placeholder="例: 第1試合"
+                  disabled={pending || matchesLoading}
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>表示順</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={newMatch.order}
+                  onChange={(event) =>
+                    setNewMatch((prev) => ({
+                      ...prev,
+                      order: Number(event.target.value) || 1
+                    }))
+                  }
+                  disabled={pending || matchesLoading}
+                  required
+                />
+              </label>
+              <div className="form-field">
+                <span>ステータス</span>
+                <button
+                  type="button"
+                  className={`toggle-pill ${newMatch.isActive ? 'active' : 'inactive'}`}
+                  aria-pressed={newMatch.isActive}
+                  onClick={() =>
+                    setNewMatch((prev) => ({
+                      ...prev,
+                      isActive: !prev.isActive
+                    }))
+                  }
+                  disabled={pending || matchesLoading}
+                >
+                  <span className="status-dot" aria-hidden="true" />
+                  {newMatch.isActive ? '有効' : '無効'}
+                </button>
+              </div>
+              <div className="button-row">
+                <button type="submit" disabled={pending || matchesLoading}>
+                  試合を追加
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="subsection">
+            <h3>組管理</h3>
+            {matchesLoading ? (
+              <LoadingSpinner label="組を読み込み中..." />
+            ) : matchesError ? (
+              <p className="status error">組データの取得に失敗しました。</p>
+            ) : isAllMatchesSelected || !selectedMatch ? (
+              <p className="description">試合を選択すると組を表示・編集できます。</p>
+            ) : (
+              <>
+                {selectedMatch.groups.length === 0 ? (
+                  <p className="description">まだ組が登録されていません。</p>
+                ) : (
+                  <ul className="location-list">
+                    {selectedMatch.groups.map((group) => (
+                      <li
+                        key={group.id}
+                        className={selectedGroupId === group.id ? 'location-item active' : 'location-item'}
+                      >
+                        <button
+                          type="button"
+                          className="location-select"
+                          onClick={() =>
+                            setSelectedGroupId((prev) => (prev === group.id ? null : group.id))
+                          }
+                        >
+                          <div>
+                            <strong>{group.name}</strong>
+                            <span className="location-meta">
+                              順番: {group.order}{' '}
+                              <span className={`status-pill ${group.isActive ? 'active' : 'inactive'}`}>
+                                <span className="status-dot" aria-hidden="true" />
+                                {group.isActive ? '有効' : '無効'}
+                              </span>
+                            </span>
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {selectedGroup ? (
+                  <div className="grid grid-2">
+                    <label className="form-field">
+                      <span>組名</span>
+                      <input
+                        type="text"
+                        defaultValue={selectedGroup.name}
+                        onBlur={(event) => handleUpdateGroup(selectedGroup.id, { name: event.target.value })}
+                        disabled={pending}
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>表示順</span>
+                      <input
+                        type="number"
+                        min={1}
+                        defaultValue={selectedGroup.order}
+                        onBlur={(event) =>
+                          handleUpdateGroup(selectedGroup.id, {
+                            order: Number(event.target.value) || selectedGroup.order
+                          })
+                        }
+                        disabled={pending}
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>開始時刻</span>
+                      <input
+                        type="datetime-local"
+                        defaultValue={toDatetimeLocal(selectedGroup.startAt)}
+                        onBlur={(event) => handleUpdateGroup(selectedGroup.id, { startAt: event.target.value })}
+                        disabled={pending}
+                      />
+                    </label>
+                    <label className="form-field">
+                      <span>終了時刻（任意）</span>
+                      <input
+                        type="datetime-local"
+                        defaultValue={toDatetimeLocal(selectedGroup.endAt)}
+                        onBlur={(event) => handleUpdateGroup(selectedGroup.id, { endAt: event.target.value })}
+                        disabled={pending}
+                      />
+                    </label>
+                    <div className="form-field">
+                      <span>ステータス</span>
+                      <button
+                        type="button"
+                        className={`toggle-pill ${selectedGroup.isActive ? 'active' : 'inactive'}`}
+                        aria-pressed={selectedGroup.isActive}
+                        onClick={() =>
+                          handleUpdateGroup(selectedGroup.id, { isActive: !selectedGroup.isActive })
+                        }
+                        disabled={pending}
+                      >
+                        <span className="status-dot" aria-hidden="true" />
+                        {selectedGroup.isActive ? '有効' : '無効'}
+                      </button>
+                    </div>
+                    <div className="button-row">
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => handleDeleteGroup(selectedGroup.id)}
+                        disabled={pending}
+                      >
+                        組を削除
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            )}
+            <form className="grid grid-2" onSubmit={handleCreateGroup}>
+              <label className="form-field">
+                <span>親試合</span>
+                <input type="text" value={selectedMatch?.name ?? '未選択'} readOnly disabled />
+              </label>
+              <label className="form-field">
+                <span>組名</span>
+                <input
+                  type="text"
+                  value={newGroup.name}
+                  onChange={(event) =>
+                    setNewGroup((prev) => ({
+                      ...prev,
+                      name: event.target.value
+                    }))
+                  }
+                  placeholder="例: 第1組"
+                  disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>表示順</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={newGroup.order}
+                  onChange={(event) =>
+                    setNewGroup((prev) => ({
+                      ...prev,
+                      order: Number(event.target.value) || 1
+                    }))
+                  }
+                  disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>開始時刻</span>
+                <input
+                  type="datetime-local"
+                  value={newGroup.startAt}
+                  onChange={(event) =>
+                    setNewGroup((prev) => ({
+                      ...prev,
+                      startAt: event.target.value
+                    }))
+                  }
+                  disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
+                />
+              </label>
+              <label className="form-field">
+                <span>終了時刻（任意）</span>
+                <input
+                  type="datetime-local"
+                  value={newGroup.endAt}
+                  onChange={(event) =>
+                    setNewGroup((prev) => ({
+                      ...prev,
+                      endAt: event.target.value
+                    }))
+                  }
+                  disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
+                />
+              </label>
+              <div className="form-field">
+                <span>ステータス</span>
+                <button
+                  type="button"
+                  className={`toggle-pill ${newGroup.isActive ? 'active' : 'inactive'}`}
+                  aria-pressed={newGroup.isActive}
+                  onClick={() =>
+                    setNewGroup((prev) => ({
+                      ...prev,
+                      isActive: !prev.isActive
+                    }))
+                  }
+                  disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
+                >
+                  <span className="status-dot" aria-hidden="true" />
+                  {newGroup.isActive ? '有効' : '無効'}
+                </button>
+              </div>
+              <div className="button-row">
+                <button
+                  type="submit"
+                  disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
+                >
+                  組を追加
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="subsection">
+            <h3>ロケーション一覧</h3>
+            {locationsLoading ? (
+              <LoadingSpinner label="読み込み中..." />
+            ) : locationsError ? (
+              <p className="status error">ロケーションの取得に失敗しました。</p>
+            ) : locations.length === 0 ? (
+              <p className="description">まだロケーションが登録されていません。</p>
+            ) : (
+              <ul className="location-list">
+                {locations.map((location) => (
+                  <li
+                    key={location.id}
+                    className={selectedLocationId === location.id ? 'location-item active' : 'location-item'}
+                  >
+                    <button
+                      type="button"
+                      className="location-select"
+                      onClick={() =>
+                        setSelectedLocationId((prev) => (prev === location.id ? null : location.id))
+                      }
+                    >
+                      <div>
+                        <strong>{location.title}</strong>
+                        <span className="location-meta">
+                          試合:{' '}
+                          {location.matchId
+                            ? matchNameMap.get(location.matchId) ?? location.matchId
+                            : '未割当'}{' '}
+                          / 難易度: {location.difficulty} / 基礎点: {location.basePoints} /{' '}
+                          <span className={`status-pill ${location.isActive ? 'active' : 'inactive'}`}>
+                            <span className="status-dot" aria-hidden="true" />
+                            {location.isActive ? '有効' : '無効'}
+                          </span>
+                        </span>
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {selectedLocation ? (
+            <section className="subsection">
+              <h3>ロケーション編集: {selectedLocation.title}</h3>
+              <div className="grid grid-2">
+                <label className="form-field">
+                  <span>タイトル</span>
+                  <input
+                    type="text"
+                    defaultValue={selectedLocation.title}
+                    onBlur={(event) => handleUpdateLocation({ title: event.target.value })}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>試合</span>
+                  <select
+                    defaultValue={selectedLocation.matchId ?? ''}
+                    onChange={(event) =>
+                      handleUpdateLocation({ matchId: event.target.value ? event.target.value : null })
+                    }
+                    disabled={pending || matchesLoading}
+                  >
+                    <option value="">未割当</option>
+                    {matchHierarchy.map((match) => (
+                      <option key={match.id} value={match.id}>
+                        {match.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>箱キーワード</span>
+                  <input
+                    type="text"
+                    defaultValue={selectedLocation.boxKeyword}
+                    onBlur={(event) => handleUpdateLocation({ boxKeyword: event.target.value })}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>難易度</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={5}
+                    defaultValue={selectedLocation.difficulty}
+                    onBlur={(event) => handleUpdateLocation({ difficulty: Number(event.target.value) })}
+                  />
+                </label>
+                <label className="form-field">
+                  <span>基礎点</span>
+                  <input
+                    type="number"
+                    min={10}
+                    step={10}
+                    defaultValue={selectedLocation.basePoints}
+                    onBlur={(event) => handleUpdateLocation({ basePoints: Number(event.target.value) })}
+                  />
+                </label>
+                <div className="form-field">
+                  <span>ステータス</span>
+                  <button
+                    type="button"
+                    className={`toggle-pill ${selectedLocation.isActive ? 'active' : 'inactive'}`}
+                    aria-pressed={selectedLocation.isActive}
+                    onClick={() => handleUpdateLocation({ isActive: !selectedLocation.isActive })}
+                    disabled={pending}
+                  >
+                    <span className="status-dot" aria-hidden="true" />
+                    {selectedLocation.isActive ? '有効' : '無効'}
+                  </button>
+                </div>
+              </div>
+              <div className="button-row">
+                <button type="button" className="danger" onClick={handleDeleteLocation}>
+                  削除
+                </button>
+              </div>
+
+              <fieldset className="qr-section">
+                <legend>署名付きQR発行</legend>
+                <label className="form-field">
+                  <span>有効期限 (ISO8601)</span>
+                  <input
+                    type="datetime-local"
+                    onBlur={(event) => {
+                      if (event.target.value) {
+                        handleGenerateQr(event.target.value)
+                      }
+                    }}
+                  />
+                </label>
+                {qrPreview && qrPreview.locationId === selectedLocation.id ? (
+                  <div className="qr-preview">
+                    <img src={`data:image/png;base64,${qrPreview.pngBase64}`} alt="署名付きQRコード" />
+                    <div className="qr-meta">
+                      <p>
+                        <strong>token:</strong> <code>{qrPreview.token}</code>
+                      </p>
+                      <p>
+                        <strong>nonce:</strong> <code>{qrPreview.nonce}</code>
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+              </fieldset>
+            </section>
+          ) : null}
+
+          <section className="subsection">
+            <h3>ロケーション追加</h3>
+            <form onSubmit={handleCreateLocation} className="grid grid-2">
               <label className="form-field">
                 <span>試合</span>
                 <select
-                  value={roleForm.matchId}
-                  onChange={(event) => {
-                    const nextMatchId = event.target.value
-                    setRoleForm((prev) => {
-                      const match = matchHierarchy.find((item) => item.id === nextMatchId)
-                      return {
-                        ...prev,
-                        matchId: nextMatchId,
-                        groupId: match?.groups[0]?.id ?? ''
-                      }
-                    })
-                  }}
-                  disabled={pending || roleForm.role !== 'leader'}
-                  required={roleForm.role === 'leader'}
+                  value={newLocation.matchId}
+                  onChange={(event) =>
+                    setNewLocation((prev) => ({
+                      ...prev,
+                      matchId: event.target.value
+                    }))
+                  }
+                  disabled={pending || matchesLoading}
+                  required
                 >
                   <option value="">選択してください</option>
                   {matchHierarchy.map((match) => (
@@ -713,750 +1583,92 @@ const AdminDashboard = () => {
                 </select>
               </label>
               <label className="form-field">
-                <span>組</span>
-                <select
-                  value={roleForm.groupId}
+                <span>タイトル</span>
+                <input
+                  type="text"
+                  value={newLocation.title}
                   onChange={(event) =>
-                    setRoleForm((prev) => ({
+                    setNewLocation((prev) => ({
                       ...prev,
-                      groupId: event.target.value
+                      title: event.target.value
                     }))
                   }
-                  disabled={
-                    pending ||
-                    roleForm.role !== 'leader' ||
-                    !roleForm.matchId ||
-                    groupsForRoleForm.length === 0
-                  }
-                  required={roleForm.role === 'leader'}
-                >
-                  <option value="">選択してください</option>
-                  {groupsForRoleForm.map((group) => (
-                    <option key={group.id} value={group.id}>
-                      {group.name}
-                    </option>
-                  ))}
-                </select>
+                  required
+                />
               </label>
-            </>
-          ) : null}
-          <div className="button-row">
-            <button type="submit" disabled={pending}>
-              ロールを更新
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => setRoleForm(createInitialRoleForm())}
-              disabled={pending}
-            >
-              入力内容をクリア
-            </button>
-          </div>
-        </form>
-        <p className="description">
-          管理者権限を付与/解除できます。リーダーに設定する場合、チーム情報が `teams` コレクションに作成・更新されます。
-          ロール変更後は対象ユーザーに再ログインしてもらい最新の権限を反映してください。
-        </p>
-</section>
-
-      <section className="subsection">
-        <h3>試合管理</h3>
-        {matchesLoading ? (
-          <LoadingSpinner label="試合を読み込み中..." />
-        ) : matchesError ? (
-          <p className="status error">試合データの取得に失敗しました。</p>
-        ) : (
-          <>
-            {matchHierarchy.length === 0 ? (
-              <p className="description">まだ試合が登録されていません。</p>
-            ) : (
-              <ul className="location-list">
-                <li
-                  key="match-all"
-                  className={
-                    isAllMatchesSelected
-                      ? 'location-item active'
-                      : 'location-item'
+              <label className="form-field">
+                <span>箱キーワード</span>
+                <input
+                  type="text"
+                  value={newLocation.boxKeyword}
+                  onChange={(event) =>
+                    setNewLocation((prev) => ({
+                      ...prev,
+                      boxKeyword: event.target.value
+                    }))
                   }
-                >
-                  <button
-                    type="button"
-                    className="location-select"
-                    onClick={() => {
-                      setSelectedMatchId((prev) => (prev === '__ALL__' ? null : '__ALL__'))
-                      setSelectedGroupId(null)
-                    }}
-                  >
-                    <div>
-                      <strong>全ての試合</strong>
-                      <span className="location-meta">ロケーション全件を表示</span>
-                    </div>
-                  </button>
-                </li>
-                {matchHierarchy.map((match) => (
-                  <li
-                    key={match.id}
-                    className={
-                      selectedMatchId === match.id
-                        ? 'location-item active'
-                        : 'location-item'
-                    }
-                  >
-                    <button
-                      type="button"
-                      className="location-select"
-                      onClick={() =>
-                        setSelectedMatchId((prev) => (prev === match.id ? null : match.id))
-                      }
-                    >
-                      <div>
-                        <strong>{match.name}</strong>
-                        <span className="location-meta">
-                          順番: {match.order} / 組数: {match.groups.length}{' '}
-                          <span className={`status-pill ${match.isActive ? 'active' : 'inactive'}`}>
-                            <span className="status-dot" aria-hidden="true" />
-                            {match.isActive ? '有効' : '無効'}
-                          </span>
-                        </span>
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {isAllMatchesSelected || !selectedMatch ? (
-              <p className="description">試合を選択すると詳細を編集できます。</p>
-            ) : (
-              <div className="grid grid-2">
-                <label className="form-field">
-                  <span>試合名</span>
-                  <input
-                    type="text"
-                    defaultValue={selectedMatch.name}
-                    onBlur={(event) => handleUpdateMatch({ name: event.target.value })}
-                    disabled={pending}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>表示順</span>
-                  <input
-                    type="number"
-                    min={1}
-                    defaultValue={selectedMatch.order}
-                    onBlur={(event) =>
-                      handleUpdateMatch({ order: Number(event.target.value) || selectedMatch.order })
-                    }
-                    disabled={pending}
-                  />
-                </label>
-                <div className="form-field">
-                  <span>ステータス</span>
-                  <button
-                    type="button"
-                    className={`toggle-pill ${selectedMatch.isActive ? 'active' : 'inactive'}`}
-                    aria-pressed={selectedMatch.isActive}
-                    onClick={() => handleUpdateMatch({ isActive: !selectedMatch.isActive })}
-                    disabled={pending}
-                  >
-                    <span className="status-dot" aria-hidden="true" />
-                    {selectedMatch.isActive ? '有効' : '無効'}
-                  </button>
-                </div>
-                <div className="button-row">
-                  <button type="button" className="danger" onClick={handleDeleteMatch} disabled={pending}>
-                    試合を削除
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-        <form className="grid grid-2" onSubmit={handleCreateMatch}>
-          <label className="form-field">
-            <span>新規試合名</span>
-            <input
-              type="text"
-              value={newMatch.name}
-              onChange={(event) =>
-                setNewMatch((prev) => ({
-                  ...prev,
-                  name: event.target.value
-                }))
-              }
-              placeholder="例: 第1試合"
-              disabled={pending || matchesLoading}
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span>表示順</span>
-            <input
-              type="number"
-              min={1}
-              value={newMatch.order}
-              onChange={(event) =>
-                setNewMatch((prev) => ({
-                  ...prev,
-                  order: Number(event.target.value) || 1
-                }))
-              }
-              disabled={pending || matchesLoading}
-              required
-            />
-          </label>
-          <div className="form-field">
-            <span>ステータス</span>
-            <button
-              type="button"
-              className={`toggle-pill ${newMatch.isActive ? 'active' : 'inactive'}`}
-              aria-pressed={newMatch.isActive}
-              onClick={() =>
-                setNewMatch((prev) => ({
-                  ...prev,
-                  isActive: !prev.isActive
-                }))
-              }
-              disabled={pending || matchesLoading}
-            >
-              <span className="status-dot" aria-hidden="true" />
-              {newMatch.isActive ? '有効' : '無効'}
-            </button>
-          </div>
-          <div className="button-row">
-            <button type="submit" disabled={pending || matchesLoading}>
-              試合を追加
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className="subsection">
-        <h3>組管理</h3>
-        {matchesLoading ? (
-          <LoadingSpinner label="組を読み込み中..." />
-        ) : matchesError ? (
-          <p className="status error">組データの取得に失敗しました。</p>
-        ) : isAllMatchesSelected || !selectedMatch ? (
-          <p className="description">試合を選択すると組を表示・編集できます。</p>
-        ) : (
-          <>
-            {selectedMatch.groups.length === 0 ? (
-              <p className="description">まだ組が登録されていません。</p>
-            ) : (
-              <ul className="location-list">
-                {selectedMatch.groups.map((group) => (
-                  <li
-                    key={group.id}
-                    className={selectedGroupId === group.id ? 'location-item active' : 'location-item'}
-                  >
-                    <button
-                      type="button"
-                      className="location-select"
-                      onClick={() =>
-                        setSelectedGroupId((prev) => (prev === group.id ? null : group.id))
-                      }
-                    >
-                      <div>
-                        <strong>{group.name}</strong>
-                        <span className="location-meta">
-                          順番: {group.order}{' '}
-                          <span className={`status-pill ${group.isActive ? 'active' : 'inactive'}`}>
-                            <span className="status-dot" aria-hidden="true" />
-                            {group.isActive ? '有効' : '無効'}
-                          </span>
-                        </span>
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {selectedGroup ? (
-              <div className="grid grid-2">
-                <label className="form-field">
-                  <span>組名</span>
-                  <input
-                    type="text"
-                    defaultValue={selectedGroup.name}
-                    onBlur={(event) => handleUpdateGroup(selectedGroup.id, { name: event.target.value })}
-                    disabled={pending}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>表示順</span>
-                  <input
-                    type="number"
-                    min={1}
-                    defaultValue={selectedGroup.order}
-                    onBlur={(event) =>
-                      handleUpdateGroup(selectedGroup.id, {
-                        order: Number(event.target.value) || selectedGroup.order
-                      })
-                    }
-                    disabled={pending}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>開始時刻</span>
-                  <input
-                    type="datetime-local"
-                    defaultValue={toDatetimeLocal(selectedGroup.startAt)}
-                    onBlur={(event) => handleUpdateGroup(selectedGroup.id, { startAt: event.target.value })}
-                    disabled={pending}
-                  />
-                </label>
-                <label className="form-field">
-                  <span>終了時刻（任意）</span>
-                  <input
-                    type="datetime-local"
-                    defaultValue={toDatetimeLocal(selectedGroup.endAt)}
-                    onBlur={(event) => handleUpdateGroup(selectedGroup.id, { endAt: event.target.value })}
-                    disabled={pending}
-                  />
-                </label>
-                <div className="form-field">
-                  <span>ステータス</span>
-                  <button
-                    type="button"
-                    className={`toggle-pill ${selectedGroup.isActive ? 'active' : 'inactive'}`}
-                    aria-pressed={selectedGroup.isActive}
-                    onClick={() =>
-                      handleUpdateGroup(selectedGroup.id, { isActive: !selectedGroup.isActive })
-                    }
-                    disabled={pending}
-                  >
-                    <span className="status-dot" aria-hidden="true" />
-                    {selectedGroup.isActive ? '有効' : '無効'}
-                  </button>
-                </div>
-                <div className="button-row">
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => handleDeleteGroup(selectedGroup.id)}
-                    disabled={pending}
-                  >
-                    組を削除
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </>
-        )}
-        <form className="grid grid-2" onSubmit={handleCreateGroup}>
-          <label className="form-field">
-            <span>親試合</span>
-            <input
-              type="text"
-              value={selectedMatch?.name ?? '未選択'}
-              readOnly
-              disabled
-            />
-          </label>
-          <label className="form-field">
-            <span>組名</span>
-            <input
-              type="text"
-              value={newGroup.name}
-              onChange={(event) =>
-                setNewGroup((prev) => ({
-                  ...prev,
-                  name: event.target.value
-                }))
-              }
-              placeholder="例: 第1組"
-              disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span>表示順</span>
-            <input
-              type="number"
-              min={1}
-              value={newGroup.order}
-              onChange={(event) =>
-                setNewGroup((prev) => ({
-                  ...prev,
-                  order: Number(event.target.value) || 1
-                }))
-              }
-              disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span>開始時刻</span>
-            <input
-              type="datetime-local"
-              value={newGroup.startAt}
-              onChange={(event) =>
-                setNewGroup((prev) => ({
-                  ...prev,
-                  startAt: event.target.value
-                }))
-              }
-              disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
-            />
-          </label>
-          <label className="form-field">
-            <span>終了時刻（任意）</span>
-            <input
-              type="datetime-local"
-              value={newGroup.endAt}
-              onChange={(event) =>
-                setNewGroup((prev) => ({
-                  ...prev,
-                  endAt: event.target.value
-                }))
-              }
-              disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
-            />
-          </label>
-          <div className="form-field">
-            <span>ステータス</span>
-            <button
-              type="button"
-              className={`toggle-pill ${newGroup.isActive ? 'active' : 'inactive'}`}
-              aria-pressed={newGroup.isActive}
-              onClick={() =>
-                setNewGroup((prev) => ({
-                  ...prev,
-                  isActive: !prev.isActive
-                }))
-              }
-              disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
-            >
-              <span className="status-dot" aria-hidden="true" />
-              {newGroup.isActive ? '有効' : '無効'}
-            </button>
-          </div>
-          <div className="button-row">
-            <button
-              type="submit"
-              disabled={pending || matchesLoading || !selectedMatch || isAllMatchesSelected}
-            >
-              組を追加
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <section className="subsection">
-        <h3>イベント時刻</h3>
-        {runtimeLoading ? (
-          <LoadingSpinner label="読み込み中..." />
-        ) : runtimeError ? (
-          <p className="status error">設定の取得に失敗しました。</p>
-        ) : (
-          <div className="grid grid-3">
-            <label className="form-field">
-              <span>開始</span>
-              <input
-                type="datetime-local"
-                defaultValue={toDatetimeLocal(runtimeDoc?.eventStart ?? null)}
-                onBlur={(event) => handleRuntimeUpdate('eventStart', event.target.value)}
-              />
-            </label>
-            <label className="form-field">
-              <span>凍結</span>
-              <input
-                type="datetime-local"
-                defaultValue={toDatetimeLocal(runtimeDoc?.freezeAt ?? null)}
-                onBlur={(event) => handleRuntimeUpdate('freezeAt', event.target.value)}
-              />
-            </label>
-            <label className="form-field">
-              <span>終了</span>
-              <input
-                type="datetime-local"
-                defaultValue={toDatetimeLocal(runtimeDoc?.eventEnd ?? null)}
-                onBlur={(event) => handleRuntimeUpdate('eventEnd', event.target.value)}
-              />
-            </label>
-          </div>
-        )}
-        <div className="button-row">
-          <button type="button" onClick={() => handleFreezeToggle(true)}>
-            順位表を凍結
-          </button>
-          <button type="button" className="secondary" onClick={() => handleFreezeToggle(false)}>
-            凍結解除
-          </button>
-        </div>
-      </section>
-
-      <section className="subsection">
-        <h3>ロケーション一覧</h3>
-        {locationsLoading ? (
-          <LoadingSpinner label="読み込み中..." />
-        ) : locationsError ? (
-          <p className="status error">ロケーションの取得に失敗しました。</p>
-        ) : locations.length === 0 ? (
-          <p className="description">まだロケーションが登録されていません。</p>
-        ) : (
-          <ul className="location-list">
-            {locations.map((location) => (
-              <li
-                key={location.id}
-                className={selectedLocationId === location.id ? 'location-item active' : 'location-item'}
-              >
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>難易度</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={newLocation.difficulty}
+                  onChange={(event) =>
+                    setNewLocation((prev) => ({
+                      ...prev,
+                      difficulty: Number(event.target.value)
+                    }))
+                  }
+                  required
+                />
+              </label>
+              <label className="form-field">
+                <span>基礎点</span>
+                <input
+                  type="number"
+                  min={10}
+                  step={10}
+                  value={newLocation.basePoints}
+                  onChange={(event) =>
+                    setNewLocation((prev) => ({
+                      ...prev,
+                      basePoints: Number(event.target.value)
+                    }))
+                  }
+                  required
+                />
+              </label>
+              <div className="form-field">
+                <span>ステータス</span>
                 <button
                   type="button"
-                  className="location-select"
+                  className={`toggle-pill ${newLocation.isActive ? 'active' : 'inactive'}`}
+                  aria-pressed={newLocation.isActive}
                   onClick={() =>
-                    setSelectedLocationId((prev) => (prev === location.id ? null : location.id))
+                    setNewLocation((prev) => ({
+                      ...prev,
+                      isActive: !prev.isActive
+                    }))
                   }
+                  disabled={pending}
                 >
-                  <div>
-                    <strong>{location.title}</strong>
-                    <span className="location-meta">
-                      試合:{' '}
-                      {location.matchId
-                        ? matchNameMap.get(location.matchId) ?? location.matchId
-                        : '未割当'}{' '}
-                      / 難易度: {location.difficulty} / 基礎点: {location.basePoints} /{' '}
-                      <span
-                        className={`status-pill ${location.isActive ? 'active' : 'inactive'}`}
-                      >
-                        <span className="status-dot" aria-hidden="true" />
-                        {location.isActive ? '有効' : '無効'}
-                      </span>
-                    </span>
-                  </div>
+                  <span className="status-dot" aria-hidden="true" />
+                  {newLocation.isActive ? '有効' : '無効'}
                 </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {selectedLocation ? (
-        <section className="subsection">
-          <h3>ロケーション編集: {selectedLocation.title}</h3>
-          <div className="grid grid-2">
-            <label className="form-field">
-              <span>タイトル</span>
-              <input
-                type="text"
-                defaultValue={selectedLocation.title}
-                onBlur={(event) => handleUpdateLocation({ title: event.target.value })}
-              />
-            </label>
-            <label className="form-field">
-              <span>試合</span>
-              <select
-                defaultValue={selectedLocation.matchId ?? ''}
-                onChange={(event) =>
-                  handleUpdateLocation({
-                    matchId: event.target.value ? event.target.value : null
-                  })
-                }
-                disabled={pending || matchesLoading}
-              >
-                <option value="">未割当</option>
-                {matchHierarchy.map((match) => (
-                  <option key={match.id} value={match.id}>
-                    {match.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="form-field">
-              <span>箱キーワード</span>
-              <input
-                type="text"
-                defaultValue={selectedLocation.boxKeyword}
-                onBlur={(event) => handleUpdateLocation({ boxKeyword: event.target.value })}
-              />
-            </label>
-            <label className="form-field">
-              <span>難易度</span>
-              <input
-                type="number"
-                min={1}
-                max={5}
-                defaultValue={selectedLocation.difficulty}
-                onBlur={(event) =>
-                  handleUpdateLocation({ difficulty: Number(event.target.value) })
-                }
-              />
-            </label>
-            <label className="form-field">
-              <span>基礎点</span>
-              <input
-                type="number"
-                min={10}
-                step={10}
-                defaultValue={selectedLocation.basePoints}
-                onBlur={(event) =>
-                  handleUpdateLocation({ basePoints: Number(event.target.value) })
-                }
-              />
-            </label>
-            <div className="form-field">
-              <span>ステータス</span>
-              <button
-                type="button"
-                className={`toggle-pill ${selectedLocation.isActive ? 'active' : 'inactive'}`}
-                aria-pressed={selectedLocation.isActive}
-                onClick={() => handleUpdateLocation({ isActive: !selectedLocation.isActive })}
-                disabled={pending}
-              >
-                <span className="status-dot" aria-hidden="true" />
-                {selectedLocation.isActive ? '有効' : '無効'}
-              </button>
-            </div>
-          </div>
-          <div className="button-row">
-            <button type="button" className="danger" onClick={handleDeleteLocation}>
-              削除
-            </button>
-          </div>
-
-          <fieldset className="qr-section">
-            <legend>署名付きQR発行</legend>
-            <label className="form-field">
-              <span>有効期限 (ISO8601)</span>
-              <input
-                type="datetime-local"
-                onBlur={(event) => {
-                  if (event.target.value) {
-                    handleGenerateQr(event.target.value)
-                  }
-                }}
-              />
-            </label>
-            {qrPreview && qrPreview.locationId === selectedLocation.id ? (
-              <div className="qr-preview">
-                <img
-                  src={`data:image/png;base64,${qrPreview.pngBase64}`}
-                  alt="署名付きQRコード"
-                />
-                <div className="qr-meta">
-                  <p>
-                    <strong>token:</strong> <code>{qrPreview.token}</code>
-                  </p>
-                  <p>
-                    <strong>nonce:</strong> <code>{qrPreview.nonce}</code>
-                  </p>
-                </div>
               </div>
-            ) : null}
-          </fieldset>
-        </section>
+              <div className="button-row">
+                <button type="submit" disabled={pending || !newLocation.matchId}>
+                  追加
+                </button>
+              </div>
+            </form>
+          </section>
+        </>
       ) : null}
-
-      <section className="subsection">
-        <h3>ロケーション追加</h3>
-        <form onSubmit={handleCreateLocation} className="grid grid-2">
-          <label className="form-field">
-            <span>試合</span>
-            <select
-              value={newLocation.matchId}
-              onChange={(event) =>
-                setNewLocation((prev) => ({
-                  ...prev,
-                  matchId: event.target.value
-                }))
-              }
-              disabled={pending || matchesLoading}
-              required
-            >
-              <option value="">選択してください</option>
-              {matchHierarchy.map((match) => (
-                <option key={match.id} value={match.id}>
-                  {match.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>タイトル</span>
-            <input
-              type="text"
-              value={newLocation.title}
-              onChange={(event) =>
-                setNewLocation((prev) => ({
-                  ...prev,
-                  title: event.target.value
-                }))
-              }
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span>箱キーワード</span>
-            <input
-              type="text"
-              value={newLocation.boxKeyword}
-              onChange={(event) =>
-                setNewLocation((prev) => ({
-                  ...prev,
-                  boxKeyword: event.target.value
-                }))
-              }
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span>難易度</span>
-            <input
-              type="number"
-              min={1}
-              max={5}
-              value={newLocation.difficulty}
-              onChange={(event) =>
-                setNewLocation((prev) => ({
-                  ...prev,
-                  difficulty: Number(event.target.value)
-                }))
-              }
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span>基礎点</span>
-            <input
-              type="number"
-              min={10}
-              step={10}
-              value={newLocation.basePoints}
-              onChange={(event) =>
-                setNewLocation((prev) => ({
-                  ...prev,
-                  basePoints: Number(event.target.value)
-                }))
-              }
-              required
-            />
-          </label>
-          <div className="form-field">
-            <span>ステータス</span>
-            <button
-              type="button"
-              className={`toggle-pill ${newLocation.isActive ? 'active' : 'inactive'}`}
-              aria-pressed={newLocation.isActive}
-              onClick={() =>
-                setNewLocation((prev) => ({
-                  ...prev,
-                  isActive: !prev.isActive
-                }))
-              }
-              disabled={pending}
-            >
-              <span className="status-dot" aria-hidden="true" />
-              {newLocation.isActive ? '有効' : '無効'}
-            </button>
-          </div>
-          <div className="button-row">
-            <button type="submit" disabled={pending || !newLocation.matchId}>
-              追加
-            </button>
-          </div>
-        </form>
-      </section>
     </section>
   )
 }

@@ -161,3 +161,18 @@ export const setUserRole = async (payload: SetUserRolePayload): Promise<SetUserR
   const { data } = await callable(payload)
   return data
 }
+
+export type SetTeamGroupPayload = {
+  teamId: string
+  matchId: string
+  groupId: string
+}
+
+export const setTeamGroupAssignment = async (payload: SetTeamGroupPayload) => {
+  const app = getApp()
+  const region = import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION as string | undefined
+  const functions = region ? getFunctions(app, region) : getFunctions(app)
+  const callable = httpsCallable<SetTeamGroupPayload, { ok: true }>(functions, 'setTeamGroup')
+  const { data } = await callable(payload)
+  return data
+}
