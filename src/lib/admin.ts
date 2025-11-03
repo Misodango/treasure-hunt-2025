@@ -1,4 +1,4 @@
-import { addDoc, collection, deleteDoc, doc, updateDoc } from 'firebase/firestore'
+import { addDoc, collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore'
 import { getApp } from 'firebase/app'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { db } from '../firebase/config'
@@ -160,6 +160,41 @@ export const setUserRole = async (payload: SetUserRolePayload): Promise<SetUserR
   const callable = httpsCallable<SetUserRolePayload, SetUserRoleResponse>(functions, 'setUserRole')
   const { data } = await callable(payload)
   return data
+}
+
+export type TeamManualInput = {
+  id?: string
+  name: string
+  teamTag: string
+  leaderEmail?: string
+  matchId?: string
+  matchName?: string | null
+  groupId?: string
+  groupName?: string | null
+}
+
+export const createTeamDocument = async (input: TeamManualInput): Promise<string> => {
+  const payload = {
+    name: input.name.trim(),
+    teamTag: input.teamTag.trim(),
+    leaderEmail: input.leaderEmail?.trim() || null,
+    matchId: input.matchId?.trim() || null,
+    matchName: input.matchName ?? null,
+    groupId: input.groupId?.trim() || null,
+    groupName: input.groupName ?? null,
+    score: 0,
+    solved: {},
+    createdAt: new Date(),
+    updatedAt: new Date()
+  }
+
+  if (input.id && input.id.trim()) {
+    await setDoc(doc(db, 'teams', input.id.trim()), payload, { merge: false })
+    return input.id.trim()
+  }
+
+  const ref = await addDoc(collection(db, 'teams'), payload)
+  return ref.id
 }
 
 export type BulkImportRow = {

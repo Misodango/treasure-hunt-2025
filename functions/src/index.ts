@@ -412,6 +412,32 @@ export const claim = onCall<ClaimPayload>(async (request) => {
       throw new HttpsError('permission-denied', 'Location does not belong to the team match.')
     }
 
+    const groupId = (teamData.groupId as string | undefined) ?? null
+    if (!groupId) {
+      throw new HttpsError('failed-precondition', 'Team group is not assigned.')
+    }
+
+    const groupRef = db.collection('groups').doc(groupId)
+    const groupSnap = await tx.get(groupRef)
+    if (!groupSnap.exists) {
+      throw new HttpsError('failed-precondition', 'Group not found for team.')
+    }
+
+    const groupData = groupSnap.data() ?? {}
+    if (typeof groupData.matchId === 'string' && teamMatchId && groupData.matchId !== teamMatchId) {
+      throw new HttpsError('failed-precondition', 'Group does not belong to assigned match.')
+    }
+
+    const now = Timestamp.now()
+    const startAt = groupData.startAt instanceof Timestamp ? groupData.startAt : null
+    const endAt = groupData.endAt instanceof Timestamp ? groupData.endAt : null
+    if (startAt && now.toMillis() < startAt.toMillis()) {
+      throw new HttpsError('failed-precondition', 'Group has not started yet.')
+    }
+    if (endAt && now.toMillis() >= endAt.toMillis()) {
+      throw new HttpsError('failed-precondition', 'Group has already finished.')
+    }
+
     if (teamData.teamTag !== providedTeamTag) {
       throw new HttpsError('permission-denied', 'Invalid team tag.')
     }
