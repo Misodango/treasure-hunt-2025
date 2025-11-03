@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
+import Papa from 'papaparse'
 import LoadingSpinner from './LoadingSpinner'
 import { useLocations } from '../hooks/useLocations'
 import { useTeams } from '../hooks/useTeams'
@@ -118,6 +119,7 @@ const AdminDashboard = () => {
     boxKeyword: '',
     isActive: true
   })
+  const csvFileInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     if (selectedMatchId === '__ALL__') return
@@ -347,6 +349,158 @@ const AdminDashboard = () => {
     } catch (err) {
       console.error(err)
       setError('チームの割り当て更新に失敗しました。')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const parseBooleanFlag = (raw: string | null | undefined): boolean => {
+    if (raw === undefined || raw === null || raw.trim() === '') return true
+    const value = raw.trim().toLowerCase()
+    if (['true', '1', 'yes', 'y', 'on'].includes(value)) return true
+    if (['false', '0', 'no', 'n', 'off'].includes(value)) return false
+    throw new Error(`isActive の値 '${raw}' は認識できません。true/false で指定してください。`)
+  }
+
+  const sanitizeForFilename = (value: string | null | undefined) =>
+    (value ?? 'unknown')
+      .trim()
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\s+/g, '_')
+      .slice(0, 50)
+
+  const handleLocationCsvImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (csvFileInputRef.current) {
+      csvFileInputRef.current.value = ''
+    }
+
+    setPending(true)
+    setStatus(null)
+    setError(null)
+
+    try {
+      const text = await file.text()
+      const expectedHeaders = ['title', 'boxKeyword', 'difficulty', 'basePoints', 'matchId', 'isActive']
+      const result = Papa.parse<Record<string, string>>(text, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header) => header.trim()
+      })
+
+      if (result.errors.length) {
+        throw new Error(`CSV解析に失敗しました: ${result.errors[0]?.message ?? '不明なエラー'}`)
+      }
+
+      const missingHeaders = expectedHeaders.filter((column) => !result.meta.fields?.includes(column))
+      if (missingHeaders.length > 0) {
+        throw new Error(`CSVのヘッダーに不足があります: ${missingHeaders.join(', ')}`)
+      }
+
+      const rows = result.data
+      if (!rows.length) {
+        throw new Error('CSVに有効な行がありません。')
+      }
+
+      const matchExists = (id: string) => matchLookup.has(id)
+
+      const locationInputs = rows.map((row, index) => {
+        const lineNo = index + 2 // header + 1-based
+        const title = row.title?.trim()
+        const boxKeyword = row.boxKeyword?.trim()
+        const difficultyValue = Number(row.difficulty)
+        const basePointsValue = Number(row.basePoints)
+        const matchId = row.matchId?.trim()
+        if (!title) throw new Error(`${lineNo} 行目: title が空です。`)
+        if (!boxKeyword) throw new Error(`${lineNo} 行目: boxKeyword が空です。`)
+        if (!matchId) throw new Error(`${lineNo} 行目: matchId が空です。`)
+        if (!matchExists(matchId)) {
+          throw new Error(`${lineNo} 行目: matchId '${matchId}' が存在しません。`)
+        }
+        if (!Number.isFinite(difficultyValue) || difficultyValue <= 0) {
+          throw new Error(`${lineNo} 行目: difficulty に正の数値を指定してください。`)
+        }
+        if (!Number.isFinite(basePointsValue) || basePointsValue <= 0) {
+          throw new Error(`${lineNo} 行目: basePoints に正の数値を指定してください。`)
+        }
+        const isActive = parseBooleanFlag(row.isActive)
+        return {
+          title,
+          boxKeyword,
+          difficulty: difficultyValue,
+          basePoints: basePointsValue,
+          matchId,
+          isActive
+        }
+      })
+
+      for (const payload of locationInputs) {
+        await createLocation(payload)
+      }
+
+      setStatus(`CSVから ${locationInputs.length} 件のロケーションを追加しました。`)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'CSV取り込み中に不明なエラーが発生しました。')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const handleBulkQrDownload = async () => {
+    const activeLocations = locations.filter((location) => location.isActive)
+    if (activeLocations.length === 0) {
+      setError('有効なロケーションがありません。')
+      return
+    }
+
+    const now = new Date()
+    const expiresAt = new Date(now)
+    expiresAt.setFullYear(expiresAt.getFullYear() + 1)
+    expiresAt.setHours(23, 59, 59, 999)
+    const expiresIso = expiresAt.toISOString()
+
+    setPending(true)
+    setStatus(null)
+    setError(null)
+
+    let successCount = 0
+    let failureCount = 0
+
+    try {
+      for (const location of activeLocations) {
+        try {
+          const response = await generateSignedQr({
+            locationId: location.id,
+            expiresAt: expiresIso
+          })
+          const matchLabel = sanitizeForFilename(matchNameMap.get(location.matchId ?? '') ?? location.matchId ?? 'match')
+          const locationLabel = sanitizeForFilename(location.title)
+          const link = document.createElement('a')
+          link.href = `data:image/png;base64,${response.pngBase64}`
+          link.download = `${matchLabel}_${locationLabel}.png`
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+          successCount += 1
+          await new Promise((resolve) => setTimeout(resolve, 150))
+        } catch (error) {
+          console.error('Failed to download QR', error)
+          failureCount += 1
+        }
+      }
+
+      const messages: string[] = []
+      if (successCount > 0) {
+        messages.push(`${successCount} 件のQRコードをダウンロードしました。`)
+      }
+      if (failureCount > 0) {
+        messages.push(`${failureCount} 件で失敗しました。コンソールを確認してください。`)
+        setError(messages.join(' '))
+      } else {
+        setStatus(messages.join(' '))
+      }
     } finally {
       setPending(false)
     }
@@ -1449,6 +1603,42 @@ const AdminDashboard = () => {
                 ))}
               </ul>
             )}
+            {locations.length > 0 ? (
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={handleBulkQrDownload}
+                  disabled={pending || matchesLoading}
+                >
+                  有効ロケーションのQRを一括ダウンロード
+                </button>
+              </div>
+            ) : null}
+          </section>
+
+        <section className="subsection">
+          <h3>ロケーションCSVインポート</h3>
+          <p className="description">
+            ヘッダー行付きのCSVで <code>title,boxKeyword,difficulty,basePoints,matchId,isActive</code>{' '}
+              の順に記述してください。`isActive` は省略時 true、`true/false` などを受け付けます。
+          </p>
+          <p className="description small">
+            サンプル:
+            <br />
+            <code>title,boxKeyword,difficulty,basePoints,matchId,isActive</code>
+            <br />
+            <code>図書室,LIBRO,1,100,match-1,true</code>
+            <br />
+            <code>屋上,SKYKEY,2,150,match-1,false</code>
+          </p>
+          <input
+            ref={csvFileInputRef}
+            type="file"
+              accept=".csv,text/csv"
+              onChange={handleLocationCsvImport}
+              disabled={pending || matchesLoading}
+            />
           </section>
 
           {selectedLocation ? (

@@ -292,13 +292,15 @@ export const generateLocationQr = onCall<GenerateQrPayload>(async (request) => {
   if (!locationId || typeof locationId !== 'string') {
     throw new HttpsError('invalid-argument', 'locationId is required.')
   }
-  if (!expiresAt || typeof expiresAt !== 'string') {
-    throw new HttpsError('invalid-argument', 'expiresAt (ISO string) is required.')
-  }
-
-  const expiration = new Date(expiresAt)
-  if (Number.isNaN(expiration.getTime()) || expiration.getTime() <= Date.now()) {
-    throw new HttpsError('invalid-argument', 'expiresAt must be a future timestamp.')
+  let expiration: Date
+  if (expiresAt && typeof expiresAt === 'string') {
+    expiration = new Date(expiresAt)
+    if (Number.isNaN(expiration.getTime()) || expiration.getTime() <= Date.now()) {
+      throw new HttpsError('invalid-argument', 'expiresAt must be a future timestamp.')
+    }
+  } else {
+    // Default: 365 days validity when not specified.
+    expiration = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365)
   }
 
   const locationSnap = await db.collection('locations').doc(locationId).get()
