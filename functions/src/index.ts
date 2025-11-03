@@ -140,6 +140,16 @@ type SetUserRoleResponse = {
   teamUpdated: boolean
 }
 
+type SetTeamGroupPayload = {
+  teamId?: string
+  matchId?: string
+  groupId?: string
+}
+
+type SetTeamGroupResponse = {
+  ok: true
+}
+
 type MatchDoc = {
   name?: string
   order?: number
@@ -451,6 +461,55 @@ export const claim = onCall<ClaimPayload>(async (request) => {
   }
 })
 
+export const setTeamGroup = onCall<SetTeamGroupPayload>(async (request) => {
+  requireRole(request, ['admin'])
+  const { teamId, matchId, groupId } = request.data ?? {}
+  if (!teamId || typeof teamId !== 'string') {
+    throw new HttpsError('invalid-argument', 'teamId is required.')
+  }
+  if (!matchId || typeof matchId !== 'string') {
+    throw new HttpsError('invalid-argument', 'matchId is required.')
+  }
+  if (!groupId || typeof groupId !== 'string') {
+    throw new HttpsError('invalid-argument', 'groupId is required.')
+  }
+
+  const [teamSnap, matchSnap, groupSnap] = await Promise.all([
+    db.collection('teams').doc(teamId).get(),
+    db.collection('matches').doc(matchId).get(),
+    db.collection('groups').doc(groupId).get()
+  ])
+
+  if (!teamSnap.exists) {
+    throw new HttpsError('not-found', 'Team not found.')
+  }
+  if (!matchSnap.exists) {
+    throw new HttpsError('invalid-argument', 'Match not found.')
+  }
+  if (!groupSnap.exists) {
+    throw new HttpsError('invalid-argument', 'Group not found.')
+  }
+  const groupData = groupSnap.data() ?? {}
+  if (groupData.matchId !== matchId) {
+    throw new HttpsError('invalid-argument', 'Group does not belong to the specified match.')
+  }
+
+  await db.collection('teams').doc(teamId).update({
+    matchId,
+    matchName: matchSnap.data()?.name ?? null,
+    groupId,
+    groupName: groupData.name ?? null,
+    updatedAt: Timestamp.now()
+  })
+
+  await updatePublicLeaderboard().catch((error) => {
+    logger.error('Failed to refresh leaderboard after team assignment update', error)
+  })
+
+  const result: SetTeamGroupResponse = { ok: true }
+  return result
+})
+
 type FreezePayload = {
   frozen?: boolean
 }
@@ -522,12 +581,14 @@ const createFallbackStructures = () => {
 }
 
 const updatePublicLeaderboard = async () => {
-  const [matchesSnapshot, groupsSnapshot, teamsSnapshot, runtimeSnap] = await Promise.all([
-    db.collection('matches').get(),
-    db.collection('groups').get(),
-    db.collection('teams').get(),
-    db.collection('settings').doc('runtime').get()
-  ])
+  const [matchesSnapshot, groupsSnapshot, teamsSnapshot, locationsSnapshot, runtimeSnap] =
+    await Promise.all([
+      db.collection('matches').get(),
+      db.collection('groups').get(),
+      db.collection('teams').get(),
+      db.collection('locations').get(),
+      db.collection('settings').doc('runtime').get()
+    ])
 
   const matchMap = new Map<string, ScoreboardMatch>()
   for (const docSnap of matchesSnapshot.docs) {
@@ -575,6 +636,13 @@ const updatePublicLeaderboard = async () => {
     groupMap.set(group.id, group)
   }
 
+  const locationMatchMap = new Map<string, string | null>()
+  for (const docSnap of locationsSnapshot.docs) {
+    const data = docSnap.data() ?? {}
+    const matchId = typeof data.matchId === 'string' && data.matchId ? data.matchId : null
+    locationMatchMap.set(docSnap.id, matchId)
+  }
+
   const { fallbackGroup, fallbackMatch } = createFallbackStructures()
   let hasFallbackEntries = false
 
@@ -601,27 +669,68 @@ const updatePublicLeaderboard = async () => {
       }
     }
 
-    const solved = (data.solved ?? {}) as Record<string, { at?: Timestamp }>
-    const lastSolveAt = Object.values(solved).reduce<Timestamp | null>(
-      (latest, entry) => {
-        if (!entry?.at) return latest
-        if (!latest || entry.at.toMillis() > latest.toMillis()) return entry.at
-        return latest
-      },
-      null
-    )
-    const startAt = targetGroup.startAt
-    const elapsedSeconds =
-      startAt && lastSolveAt ? Math.max(0, Math.round((lastSolveAt.toMillis() - startAt.toMillis()) / 1000)) : null
+    const solved = (data.solved ?? {}) as Record<string, { at?: Timestamp; points?: number }>
+
+    type MatchStat = { points: number; lastSolve: Timestamp | null; solvedCount: number }
+    const matchStats = new Map<string, MatchStat>()
+    let overallLastSolve: Timestamp | null = null
+    let overallPoints = 0
+    let overallSolveCount = 0
+
+    for (const [locId, value] of Object.entries(solved)) {
+      const points = Number((value ?? {}).points ?? 0)
+      if (!Number.isFinite(points)) continue
+      overallPoints += points
+      overallSolveCount += 1
+
+      const at = value?.at instanceof Timestamp ? value.at : null
+      if (at && (!overallLastSolve || at.toMillis() > overallLastSolve.toMillis())) {
+        overallLastSolve = at
+      }
+
+      const matchKey = locationMatchMap.get(locId) ?? fallbackMatch.id
+      const stat = matchStats.get(matchKey) ?? { points: 0, lastSolve: null, solvedCount: 0 }
+      stat.points += points
+      stat.solvedCount += 1
+      if (at && (!stat.lastSolve || at.toMillis() > stat.lastSolve.toMillis())) {
+        stat.lastSolve = at
+      }
+      matchStats.set(matchKey, stat)
+    }
+
+    if (!matchStats.has(fallbackMatch.id)) {
+      matchStats.set(fallbackMatch.id, {
+        points: overallPoints,
+        lastSolve: overallLastSolve,
+        solvedCount: overallSolveCount
+      })
+    }
 
     const entry: ScoreboardTeamEntry = {
       teamId: docSnap.id,
       teamName: typeof data.name === 'string' && data.name.trim() ? data.name : docSnap.id,
-      score: Number.isFinite(Number(data.score)) ? Number(data.score) : 0,
-      lastSolveAt,
-      elapsedSeconds,
-      solvedCount: Object.keys(solved).length
+      score: 0,
+      lastSolveAt: null,
+      elapsedSeconds: null,
+      solvedCount: 0
     }
+    const targetStats = matchStats.get(targetGroup.matchId) ?? {
+      points: 0,
+      lastSolve: null,
+      solvedCount: 0
+    }
+    entry.score = targetStats.points
+    entry.lastSolveAt = targetStats.lastSolve
+    entry.solvedCount = targetStats.solvedCount
+    if (targetGroup.startAt && targetStats.lastSolve) {
+      entry.elapsedSeconds = Math.max(
+        0,
+        Math.round((targetStats.lastSolve.toMillis() - targetGroup.startAt.toMillis()) / 1000)
+      )
+    } else {
+      entry.elapsedSeconds = null
+    }
+
     targetGroup.entries.push(entry)
 
     if (!matchEntry || !groupEntry) {
