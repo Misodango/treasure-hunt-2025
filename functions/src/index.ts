@@ -512,6 +512,130 @@ export const setTeamGroup = onCall<SetTeamGroupPayload>(async (request) => {
   return result
 })
 
+type CsvUserRecord = {
+  email?: string
+  uid?: string
+  role?: 'leader' | 'admin' | 'none'
+  teamName?: string
+  teamTag?: string
+  matchId?: string
+  groupId?: string
+}
+
+export const bulkImportUsers = onCall<{ rows?: CsvUserRecord[] }>(async (request) => {
+  requireRole(request, ['admin'])
+  const rows = request.data?.rows
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new HttpsError('invalid-argument', 'rows must be a non-empty array.')
+  }
+
+  const auth = getAuth()
+  const errors: { index: number; code: string; message: string }[] = []
+  let successCount = 0
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    if (!row) {
+      errors.push({ index, code: 'invalid-row', message: 'Row is undefined.' })
+      continue
+    }
+    const role = sanitizeRole(row.role)
+    if (!role) {
+      errors.push({ index, code: 'invalid-role', message: 'role must be leader|admin|none.' })
+      continue
+    }
+
+    const trimmedUid = typeof row.uid === 'string' ? row.uid.trim() : ''
+    const trimmedEmail = typeof row.email === 'string' ? row.email.trim() : ''
+    if (!trimmedUid && !trimmedEmail) {
+      errors.push({ index, code: 'missing-target', message: 'uid or email is required.' })
+      continue
+    }
+
+    let userRecord
+    try {
+      if (trimmedUid) {
+        userRecord = await auth.getUser(trimmedUid)
+      } else {
+        userRecord = await auth.getUserByEmail(trimmedEmail)
+      }
+    } catch (error) {
+      errors.push({ index, code: 'user-not-found', message: 'User not found.' })
+      logger.error('Failed to find user for CSV import', error)
+      continue
+    }
+
+    if (role === 'leader') {
+      const safeTeamName = typeof row.teamName === 'string' ? row.teamName.trim() : ''
+      const safeTeamTag = typeof row.teamTag === 'string' ? row.teamTag.trim() : ''
+      const safeMatchId = typeof row.matchId === 'string' ? row.matchId.trim() : ''
+      const safeGroupId = typeof row.groupId === 'string' ? row.groupId.trim() : ''
+      if (!safeTeamName || !safeTeamTag || !safeMatchId || !safeGroupId) {
+        errors.push({
+          index,
+          code: 'missing-leader-fields',
+          message: 'teamName, teamTag, matchId, groupId are required for leader role.'
+        })
+        continue
+      }
+
+      const matchSnap = await db.collection('matches').doc(safeMatchId).get()
+      const groupSnap = await db.collection('groups').doc(safeGroupId).get()
+      if (!matchSnap.exists) {
+        errors.push({ index, code: 'match-not-found', message: `matchId ${safeMatchId} not found.` })
+        continue
+      }
+      if (!groupSnap.exists) {
+        errors.push({ index, code: 'group-not-found', message: `groupId ${safeGroupId} not found.` })
+        continue
+      }
+      if (groupSnap.data()?.matchId !== safeMatchId) {
+        errors.push({ index, code: 'group-mismatch', message: 'group does not belong to match.' })
+        continue
+      }
+
+      const teamRef = db.collection('teams').doc(userRecord.uid)
+      const now = Timestamp.now()
+      await teamRef.set(
+        {
+          name: safeTeamName,
+          teamTag: safeTeamTag,
+          leaderEmail: userRecord.email ?? null,
+          matchId: safeMatchId,
+          matchName: matchSnap.data()?.name ?? null,
+          groupId: safeGroupId,
+          groupName: groupSnap.data()?.name ?? null,
+          score: 0,
+          solved: {},
+          updatedAt: now,
+          createdAt: now
+        },
+        { merge: true }
+      )
+    }
+
+    const existingClaims = userRecord.customClaims ?? {}
+    const nextClaims: Record<string, unknown> = { ...existingClaims }
+    if (role === 'none') {
+      delete nextClaims.role
+    } else {
+      nextClaims.role = role
+    }
+    await auth.setCustomUserClaims(userRecord.uid, nextClaims)
+    successCount += 1
+  }
+
+  await updatePublicLeaderboard().catch((err) =>
+    logger.error('Failed to refresh leaderboard after CSV import', err)
+  )
+
+  return {
+    successCount,
+    failureCount: errors.length,
+    errors
+  }
+})
+
 type FreezePayload = {
   frozen?: boolean
 }

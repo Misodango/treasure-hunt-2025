@@ -162,6 +162,31 @@ export const setUserRole = async (payload: SetUserRolePayload): Promise<SetUserR
   return data
 }
 
+export type BulkImportRow = {
+  email?: string
+  uid?: string
+  role: 'leader' | 'admin' | 'none'
+  teamName?: string
+  teamTag?: string
+  matchId?: string
+  groupId?: string
+}
+
+export type BulkImportResult = {
+  successCount: number
+  failureCount: number
+  errors: Array<{ index: number; code: string; message: string }>
+}
+
+export const bulkImportUsers = async (rows: BulkImportRow[]): Promise<BulkImportResult> => {
+  const app = getApp()
+  const region = import.meta.env.VITE_FIREBASE_FUNCTIONS_REGION as string | undefined
+  const functions = region ? getFunctions(app, region) : getFunctions(app)
+  const callable = httpsCallable<{ rows: BulkImportRow[] }, BulkImportResult>(functions, 'bulkImportUsers')
+  const { data } = await callable({ rows })
+  return data
+}
+
 export type SetTeamGroupPayload = {
   teamId: string
   matchId: string

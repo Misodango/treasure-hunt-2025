@@ -62,6 +62,7 @@
 
 * リーダーのみ登録可（**メールリンク認証** + **ホワイトリスト**）。
 * 認証後に `customClaims.role = "leader"` を付与。
+* CSVでユーザーを一括登録可能（ヘッダー例: `email,uid,role,teamName,teamTag,matchId,groupId`）。
 
 ### 5.2 ロケーション管理（管理者）
 

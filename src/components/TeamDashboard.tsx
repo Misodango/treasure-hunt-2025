@@ -142,28 +142,28 @@ const TeamDashboard = () => {
           QRスキャナーを開く
         </button>
         <label className="form-field">
-          <span>QRトークン</span>
+          <span>QRトークン(QRコードから自動生成されます)</span>
           <input
             type="text"
             value={token}
             onChange={(event) => setToken(event.target.value)}
             placeholder="locId|nonce|exp|signature"
             required
-            disabled={submitting}
+            disabled={true}
           />
         </label>
 
         <label className="form-field">
-          <span>箱キーワード</span>
+          <span>解いた謎の答え(全カナ)</span>
           <input
             type="text"
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
-            placeholder="例: AKAGANE"
+            placeholder="例: マンタニジャスティス"
             required
             disabled={submitting}
           />
-          <small className="form-hint">提出時に TeamTag ({team.teamTag}) が自動で添付されます。</small>
+          {/* <small className="form-hint">提出時に TeamTag ({team.teamTag}) が自動で添付されます。</small> */}
         </label>
 
         <button type="submit" disabled={submitting}>
