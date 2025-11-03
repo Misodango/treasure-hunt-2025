@@ -69,6 +69,10 @@
 * **署名付きQR**生成（`locId|nonce|exp|signature`）とPNGダウンロード。
 * 試合 (`matches`)・組 (`groups`) を編成し、開始/終了時刻・表示順・有効状態を管理。
 * 各ロケーションには所属する試合 (`matchId`) を必須で紐付ける。
+* CSVインポートで複数ロケーションを一括登録（ヘッダー: `title,boxKeyword,difficulty,basePoints,matchId,isActive`）。
+  サンプル:
+  * `図書室,LIBRO,1,100,match-1,true`
+  * `屋上,SKYKEY,2,150,match-1,false`
 * リーダー割当時にチームへ試合・組を設定（未割当チームはランキングで警告表示）。
 
 ### 5.3 提出（claim）
