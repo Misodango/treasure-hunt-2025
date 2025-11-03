@@ -53,7 +53,7 @@ const MainApp = () => {
     <div className="app-layout">
       <header className="app-header">
         <div>
-          <h1>明和寮 宝探しイベント</h1>
+          <h1>明和寮<br></br>宝探しイベント</h1>
           <p>ダッシュボード</p>
         </div>
         <div className="header-meta">

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useZxing } from 'react-zxing'
 import { storeScannedToken } from '../lib/qr'
 
-const INITIAL_STATUS = 'カメラを開始するには下のボタンを押してください。'
+const INITIAL_STATUS = 'カメラを開始するには開始ボタンを押してください。'
 
 const formatTokenPreview = (token: string) => {
   if (token.length <= 32) return token

@@ -7,6 +7,7 @@ import { useTeams } from '../hooks/useTeams'
 import { useRuntimeSettings } from '../hooks/useRuntimeSettings'
 import { useMatchHierarchy } from '../hooks/useMatches'
 import {
+  bulkImportUsers,
   createGroup,
   createLocation,
   createMatch,
@@ -22,7 +23,7 @@ import {
   updateMatchById,
   updateRuntimeSetting
 } from '../lib/admin'
-import type { LocationUpdateInput } from '../lib/admin'
+import type { BulkImportRow, LocationUpdateInput } from '../lib/admin'
 import type { RuntimeSettings } from '../lib/time'
 
 type QrPreview = {
@@ -120,6 +121,7 @@ const AdminDashboard = () => {
     isActive: true
   })
   const csvFileInputRef = useRef<HTMLInputElement | null>(null)
+  const userCsvInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     if (selectedMatchId === '__ALL__') return
@@ -323,6 +325,9 @@ const AdminDashboard = () => {
     })
   }
 
+  const [showAssignedTeams, setShowAssignedTeams] = useState(true)
+  const [showUnassignedTeams, setShowUnassignedTeams] = useState(true)
+
   const handleTeamAssignmentSubmit = async (teamId: string) => {
     const assignment = teamAssignments[teamId]
     const team = teams.find((item) => item.id === teamId)
@@ -353,6 +358,16 @@ const AdminDashboard = () => {
       setPending(false)
     }
   }
+
+  const filteredTeams = useMemo(() => {
+    return teams.filter((team) => {
+      const assignment = teamAssignments[team.id] ?? { matchId: team.matchId ?? '', groupId: team.groupId ?? '' }
+      const isAssigned = Boolean(assignment.matchId && assignment.groupId)
+      if (isAssigned && !showAssignedTeams) return false
+      if (!isAssigned && !showUnassignedTeams) return false
+      return true
+    })
+  }, [teams, teamAssignments, showAssignedTeams, showUnassignedTeams])
 
   const parseBooleanFlag = (raw: string | null | undefined): boolean => {
     if (raw === undefined || raw === null || raw.trim() === '') return true
@@ -443,6 +458,57 @@ const AdminDashboard = () => {
     } catch (err) {
       console.error(err)
       setError(err instanceof Error ? err.message : 'CSV取り込み中に不明なエラーが発生しました。')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const handleUserCsvImport = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (userCsvInputRef.current) {
+      userCsvInputRef.current.value = ''
+    }
+
+    setPending(true)
+    setStatus(null)
+    setError(null)
+
+    try {
+      const text = await file.text()
+      const result = Papa.parse<Record<string, string>>(text, {
+        header: true,
+        skipEmptyLines: true,
+        transformHeader: (header) => header.trim()
+      })
+
+      if (result.errors.length) {
+        throw new Error(`CSV解析に失敗しました: ${result.errors[0]?.message ?? '不明なエラー'}`)
+      }
+
+      const rows: BulkImportRow[] = result.data.map((row) => ({
+        email: row.email?.trim() ?? undefined,
+        uid: row.uid?.trim() ?? undefined,
+        role: (row.role?.trim()?.toLowerCase() as BulkImportRow['role']) ?? 'none',
+        teamName: row.teamName?.trim() ?? undefined,
+        teamTag: row.teamTag?.trim() ?? undefined,
+        matchId: row.matchId?.trim() ?? undefined,
+        groupId: row.groupId?.trim() ?? undefined
+      }))
+
+      const response = await bulkImportUsers(rows)
+      if (response.failureCount > 0) {
+        const issues = response.errors
+          .map((issue) => `${issue.index + 2} 行目: [${issue.code}] ${issue.message}`)
+          .join(' / ')
+        setError(`一部の行で失敗しました (${response.failureCount} 件): ${issues}`)
+      }
+      if (response.successCount > 0) {
+        setStatus(`${response.successCount} 件のユーザー情報をインポートしました。`)
+      }
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error ? err.message : 'ユーザーCSV取り込み中に不明なエラーが発生しました。')
     } finally {
       setPending(false)
     }
@@ -890,6 +956,24 @@ const AdminDashboard = () => {
       {activeTab === 'roles' ? (
         <section className="subsection">
           <h3>ユーザーロール管理</h3>
+          <p className="description">
+            CSVで一括登録する場合はヘッダーに{' '}
+            <code>email,uid,role,teamName,teamTag,matchId,groupId</code>
+            {' '}を指定してください。leader の行では `teamName/teamTag/matchId/groupId` が必須です。
+          </p>
+          <div className="button-row">
+            <label className="secondary">
+              CSVでインポート
+              <input
+                ref={userCsvInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                onChange={handleUserCsvImport}
+                disabled={pending}
+                style={{ display: 'none' }}
+              />
+            </label>
+          </div>
           <form className="grid grid-2" onSubmit={handleRoleSubmit}>
             <label className="form-field">
               <span>メールアドレス</span>
@@ -1057,80 +1141,104 @@ const AdminDashboard = () => {
           ) : teams.length === 0 ? (
             <p className="description">登録済みのチームがまだありません。</p>
           ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table className="scoreboard">
-                <thead>
-                  <tr>
-                    <th>チーム</th>
-                    <th>リーダー</th>
-                    <th>TeamTag</th>
-                    <th>試合</th>
-                    <th>組</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {teams.map((team) => {
-                    const assignment = teamAssignments[team.id] ?? { matchId: '', groupId: '' }
-                    const selectedMatch = assignment.matchId ? matchLookup.get(assignment.matchId) ?? null : null
-                    const availableGroups = selectedMatch?.groups ?? []
-                    const warning =
-                      !assignment.matchId || !assignment.groupId ? 'status warning small' : undefined
-                    return (
-                      <tr key={team.id}>
-                        <td>
-                          <div>
-                            <strong>{team.name}</strong>
-                            <div className="description small">スコア: {team.score} pt</div>
-                          </div>
-                        </td>
-                        <td>{team.leaderEmail ?? '未設定'}</td>
-                        <td>{team.teamTag || '未設定'}</td>
-                        <td>
-                          <select
-                            value={assignment.matchId}
-                            onChange={(event) => handleTeamMatchChange(team.id, event.target.value)}
-                            disabled={pending || matchHierarchy.length === 0}
-                          >
-                            <option value="">選択してください</option>
-                            {matchHierarchy.map((match) => (
-                              <option key={match.id} value={match.id}>
-                                {match.name}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <select
-                            value={assignment.groupId}
-                            onChange={(event) => handleTeamGroupChange(team.id, event.target.value)}
-                            disabled={pending || !assignment.matchId || availableGroups.length === 0}
-                          >
-                            <option value="">選択してください</option>
-                            {availableGroups.map((group) => (
-                              <option key={group.id} value={group.id}>
-                                {group.name}
-                              </option>
-                            ))}
-                          </select>
-                          {warning ? <p className={warning}>未割当です</p> : null}
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            className="small"
-                            onClick={() => handleTeamAssignmentSubmit(team.id)}
-                            disabled={pending || !assignment.matchId || !assignment.groupId}
-                          >
-                            割り当て更新
-                          </button>
-                        </td>
+            <>
+              <div className="filter-row">
+                <label className="form-field inline">
+                  <input
+                    type="checkbox"
+                    checked={showAssignedTeams}
+                    onChange={(event) => setShowAssignedTeams(event.target.checked)}
+                  />
+                  <span>割り当て済みを表示</span>
+                </label>
+                <label className="form-field inline">
+                  <input
+                    type="checkbox"
+                    checked={showUnassignedTeams}
+                    onChange={(event) => setShowUnassignedTeams(event.target.checked)}
+                  />
+                  <span>未割り当てを表示</span>
+                </label>
+              </div>
+              {filteredTeams.length === 0 ? (
+                <p className="description">該当するチームがありません。</p>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="scoreboard">
+                    <thead>
+                      <tr>
+                        <th>チーム</th>
+                        <th>リーダー</th>
+                        <th>TeamTag</th>
+                        <th>試合</th>
+                        <th>組</th>
+                        <th>操作</th>
                       </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+                    </thead>
+                    <tbody>
+                      {filteredTeams.map((team) => {
+                        const assignment = teamAssignments[team.id] ?? { matchId: '', groupId: '' }
+                        const selectedMatch = assignment.matchId ? matchLookup.get(assignment.matchId) ?? null : null
+                        const availableGroups = selectedMatch?.groups ?? []
+                        const warning =
+                          !assignment.matchId || !assignment.groupId ? 'status warning small' : undefined
+                        return (
+                          <tr key={team.id}>
+                            <td>
+                              <div>
+                                <strong>{team.name}</strong>
+                                <div className="description small">スコア: {team.score} pt</div>
+                              </div>
+                            </td>
+                            <td>{team.leaderEmail ?? '未設定'}</td>
+                            <td>{team.teamTag || '未設定'}</td>
+                            <td>
+                              <select
+                                value={assignment.matchId}
+                                onChange={(event) => handleTeamMatchChange(team.id, event.target.value)}
+                                disabled={pending || matchHierarchy.length === 0}
+                              >
+                                <option value="">選択してください</option>
+                                {matchHierarchy.map((match) => (
+                                  <option key={match.id} value={match.id}>
+                                    {match.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td>
+                              <select
+                                value={assignment.groupId}
+                                onChange={(event) => handleTeamGroupChange(team.id, event.target.value)}
+                                disabled={pending || !assignment.matchId || availableGroups.length === 0}
+                              >
+                                <option value="">選択してください</option>
+                                {availableGroups.map((group) => (
+                                  <option key={group.id} value={group.id}>
+                                    {group.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {warning ? <p className={warning}>未割当です</p> : null}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                className="small"
+                                onClick={() => handleTeamAssignmentSubmit(team.id)}
+                                disabled={pending || !assignment.matchId || !assignment.groupId}
+                              >
+                                割り当て更新
+                              </button>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
           )}
           <p className="description">
             割り当てを更新すると、該当チームのランキング集計も即時で再計算されます。
