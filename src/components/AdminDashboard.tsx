@@ -11,6 +11,7 @@ import {
   createGroup,
   createLocation,
   createMatch,
+  createTeamDocument,
   deleteGroupById,
   deleteLocationById,
   deleteMatchById,
@@ -23,7 +24,7 @@ import {
   updateMatchById,
   updateRuntimeSetting
 } from '../lib/admin'
-import type { BulkImportRow, LocationUpdateInput } from '../lib/admin'
+import type { BulkImportRow, LocationUpdateInput, TeamManualInput } from '../lib/admin'
 import type { RuntimeSettings } from '../lib/time'
 
 type QrPreview = {
@@ -122,6 +123,16 @@ const AdminDashboard = () => {
   })
   const csvFileInputRef = useRef<HTMLInputElement | null>(null)
   const userCsvInputRef = useRef<HTMLInputElement | null>(null)
+  const [isCreateTeamModalOpen, setIsCreateTeamModalOpen] = useState(false)
+  const createInitialTeamForm = (): TeamManualInput & { leaderEmail?: string } => ({
+    id: '',
+    name: '',
+    teamTag: '',
+    leaderEmail: '',
+    matchId: '',
+    groupId: ''
+  })
+  const [newTeam, setNewTeam] = useState<TeamManualInput & { leaderEmail?: string }>(() => createInitialTeamForm())
 
   useEffect(() => {
     if (selectedMatchId === '__ALL__') return
@@ -327,6 +338,56 @@ const AdminDashboard = () => {
 
   const [showAssignedTeams, setShowAssignedTeams] = useState(true)
   const [showUnassignedTeams, setShowUnassignedTeams] = useState(true)
+
+  const handleCreateTeam = async (evt: FormEvent<HTMLFormElement>) => {
+    evt.preventDefault()
+    if (!newTeam.name.trim() || !newTeam.teamTag.trim()) {
+      setError('チーム名とTeamTagを入力してください。')
+      return
+    }
+    if (newTeam.matchId && !newTeam.groupId) {
+      setError('試合を選択した場合は組も選択してください。')
+      return
+    }
+
+    setPending(true)
+    setStatus(null)
+    setError(null)
+    try {
+      const matchInfo = newTeam.matchId ? matchLookup.get(newTeam.matchId) ?? null : null
+      const groupInfo = matchInfo?.groups.find((group) => group.id === newTeam.groupId) ?? null
+      const createdId = await createTeamDocument({
+        id: newTeam.id?.trim() || undefined,
+        name: newTeam.name.trim(),
+        teamTag: newTeam.teamTag.trim(),
+        leaderEmail: newTeam.leaderEmail?.trim() || undefined,
+        matchId: newTeam.matchId?.trim() || undefined,
+        matchName: matchInfo?.name ?? null,
+        groupId: newTeam.groupId?.trim() || undefined,
+        groupName: groupInfo?.name ?? null
+      })
+
+      if (newTeam.matchId && newTeam.groupId) {
+        await setTeamGroupAssignment({
+          teamId: createdId,
+          matchId: newTeam.matchId,
+          groupId: newTeam.groupId
+        })
+      }
+
+      setStatus('チームを作成しました。')
+      setIsCreateTeamModalOpen(false)
+      setNewTeam(createInitialTeamForm())
+    } catch (err) {
+      console.error(err)
+      setError('チームの作成に失敗しました。既存IDの重複や入力値を確認してください。')
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const modalMatch = newTeam.matchId ? matchLookup.get(newTeam.matchId) ?? null : null
+  const modalGroups = modalMatch?.groups ?? []
 
   const handleTeamAssignmentSubmit = async (teamId: string) => {
     const assignment = teamAssignments[teamId]
@@ -1159,6 +1220,9 @@ const AdminDashboard = () => {
                   />
                   <span>未割り当てを表示</span>
                 </label>
+                <button type="button" className="small" onClick={() => setIsCreateTeamModalOpen(true)}>
+                  チームを作成
+                </button>
               </div>
               {filteredTeams.length === 0 ? (
                 <p className="description">該当するチームがありません。</p>
@@ -1966,6 +2030,136 @@ const AdminDashboard = () => {
             </form>
           </section>
         </>
+      ) : null}
+
+      {isCreateTeamModalOpen ? (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>チーム作成</h3>
+            <form className="form-vertical" onSubmit={handleCreateTeam}>
+              <label className="form-field">
+                <span>チームID（任意）</span>
+                <input
+                  type="text"
+                  value={newTeam.id ?? ''}
+                  onChange={(event) =>
+                    setNewTeam((prev) => ({
+                      ...prev,
+                      id: event.target.value
+                    }))
+                  }
+                  placeholder="Firebase Team doc ID"
+                  disabled={pending}
+                />
+                <small className="form-hint">未入力の場合は自動採番されます。</small>
+              </label>
+              <label className="form-field">
+                <span>チーム名</span>
+                <input
+                  type="text"
+                  value={newTeam.name}
+                  onChange={(event) =>
+                    setNewTeam((prev) => ({
+                      ...prev,
+                      name: event.target.value
+                    }))
+                  }
+                  required
+                  disabled={pending}
+                />
+              </label>
+              <label className="form-field">
+                <span>TeamTag</span>
+                <input
+                  type="text"
+                  value={newTeam.teamTag}
+                  onChange={(event) =>
+                    setNewTeam((prev) => ({
+                      ...prev,
+                      teamTag: event.target.value
+                    }))
+                  }
+                  required
+                  disabled={pending}
+                />
+              </label>
+              <label className="form-field">
+                <span>リーダーメール（任意）</span>
+                <input
+                  type="email"
+                  value={newTeam.leaderEmail ?? ''}
+                  onChange={(event) =>
+                    setNewTeam((prev) => ({
+                      ...prev,
+                      leaderEmail: event.target.value
+                    }))
+                  }
+                  placeholder="leader@example.com"
+                  disabled={pending}
+                />
+              </label>
+              <label className="form-field">
+                <span>試合</span>
+                <select
+                  value={newTeam.matchId ?? ''}
+                  onChange={(event) => {
+                    const matchId = event.target.value
+                    const match = matchLookup.get(matchId) ?? null
+                    setNewTeam((prev) => ({
+                      ...prev,
+                      matchId,
+                      groupId: match?.groups[0]?.id ?? ''
+                    }))
+                  }}
+                  disabled={pending}
+                >
+                  <option value="">未選択</option>
+                  {matchHierarchy.map((match) => (
+                    <option key={match.id} value={match.id}>
+                      {match.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>組</span>
+                <select
+                  value={newTeam.groupId ?? ''}
+                  onChange={(event) =>
+                    setNewTeam((prev) => ({
+                      ...prev,
+                      groupId: event.target.value
+                    }))
+                  }
+                  disabled={pending || !modalMatch || modalGroups.length === 0}
+                >
+                  <option value="">未選択</option>
+                  {modalGroups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {group.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="button-row">
+                <button type="submit" disabled={pending}>
+                  作成
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    setIsCreateTeamModalOpen(false)
+                    setNewTeam(createInitialTeamForm())
+                  }}
+                  disabled={pending}
+                >
+                  キャンセル
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       ) : null}
     </section>
   )

@@ -272,6 +272,24 @@ button.toggle-pill.inactive {
   margin: 0;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal {
+  background: #f8fafc;
+  border-radius: 18px;
+  padding: 2rem;
+  width: min(90vw, 420px);
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.25);
+}
+
 .status-dot {
   width: 0.55rem;
   height: 0.55rem;
